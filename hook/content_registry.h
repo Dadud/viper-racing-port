@@ -11,10 +11,9 @@ struct Entry {
     Kind kind;
     std::filesystem::path path;
     std::string name;
-    std::string id; // root-relative path, unique within one scan
-    bool possible_duplicate = false; // matching non-cryptographic fingerprint
-    // FNV-1a 64 is a fingerprint, not a cryptographic identity.
-    std::string fingerprint;
+    std::string id; // kind and SHA-256 of the exact file; stable across moves
+    std::string sha256;
+    bool duplicate = false; // byte-for-byte match of another entry in this scan
     std::vector<std::string> members;
     std::vector<std::string> issues;
     bool valid = false; // container structure only; not a guarantee of playability

@@ -1,4 +1,6 @@
 #include "../hook/content_registry.h"
+#include "../hook/content_sha256.h"
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -13,6 +15,13 @@ static void write(const fs::path& p, const std::vector<unsigned char>& b) {
     std::ofstream f(p, std::ios::binary); f.write(reinterpret_cast<const char*>(b.data()), b.size());
 }
 int main() {
+    content::Sha256 empty;
+    assert(empty.finish()=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    content::Sha256 abc; abc.update("a",1); abc.update("bc",2);
+    assert(abc.finish()=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    content::Sha256 million; std::string chunk(1000,'a');
+    for (int i=0; i<1000; ++i) million.update(chunk.data(),chunk.size());
+    assert(million.finish()=="cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
     auto dir = fs::temp_directory_path() / ("vp-content-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(dir / "nested");
     std::vector<unsigned char> b(16+36+8+3, 0);
@@ -24,9 +33,31 @@ int main() {
     auto r=content::scan(dir);
     assert(r.entries.size()==3 && r.entries[0].valid && !r.entries[1].valid && r.entries[2].valid);
     assert(r.entries[0].members.size()==1 && r.entries[0].members[0]=="body.mod");
-    assert(r.entries[2].possible_duplicate && r.entries[0].id != r.entries[2].id);
+    assert(r.entries[0].duplicate && r.entries[2].duplicate && r.entries[0].id == r.entries[2].id);
+    auto stable_id = r.entries[0].id;
+    fs::rename(dir / "alpha.car", dir / "moved.car");
+    auto moved = content::scan(dir);
+    assert(content::search(moved,"moved")[0]->id == stable_id);
     assert(content::search(r,"ALP").size()==1);
     assert(!r.entries[1].issues.empty());
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::vector<unsigned char> huge(16,0);
+    huge[0]='0'; huge[1]='T'; huge[2]='S'; huge[3]='R'; word(huge,4,0xffffffffu);
+    write(dir / "huge.car",huge);
+    auto invalid = content::scan(dir);
+    assert(invalid.entries.size()==1 && !invalid.entries[0].valid);
+    // The documented lockd directory padding has no corresponding payload.
+    std::vector<unsigned char> decoy(16+36,0);
+    decoy[0]='0'; decoy[1]='T'; decoy[2]='S'; decoy[3]='R'; word(decoy,4,1);
+    const std::string decoy_name="lockd1.tab";
+    std::copy(decoy_name.begin(),decoy_name.end(),decoy.begin()+16);
+    decoy[32]='B'; decoy[33]='A'; decoy[34]='T'; decoy[35]='S'; word(decoy,40,12);
+    write(dir / "decoy.car",decoy);
+    auto padded=content::scan(dir);
+    assert(padded.entries[0].valid && padded.entries[0].members.empty());
+    decoy[32]='X'; write(dir / "decoy.car",decoy);
+    assert(!content::scan(dir).entries[0].valid);
     fs::remove_all(dir);
     std::cout << "content registry tests passed\n";
 }

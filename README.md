@@ -315,7 +315,7 @@ The read-only native inventory is described in [ARCHITECTURE.md](ARCHITECTURE.md
 Its synthetic, asset-free test can be run with a C++17 compiler:
 
 ```sh
-c++ -std=c++17 -Wall -Wextra hook/content_registry.cpp test/content_registry_test.cpp -o /tmp/vp-content-test
+c++ -std=c++17 -Wall -Wextra hook/content_registry.cpp hook/content_sha256.cpp test/content_registry_test.cpp -o /tmp/vp-content-test
 /tmp/vp-content-test
 ```
 

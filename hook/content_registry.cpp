@@ -1,11 +1,12 @@
 #include "content_registry.h"
+#include "content_sha256.h"
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
-#include <iomanip>
+#include <map>
 #include <limits>
 #include <set>
-#include <sstream>
+
 
 namespace content {
 namespace {
@@ -21,15 +22,15 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     std::ifstream f(path, std::ios::binary);
     if (!f) { e.issues.push_back("Cannot open file"); return e; }
     // Stream the fingerprint: never allocate based on an untrusted file's size.
-    uint64_t hash = UINT64_C(14695981039346656037), size = 0;
+    Sha256 hash; uint64_t size = 0;
     char buf[16384];
     while (f.read(buf, sizeof buf) || f.gcount()) {
         auto n = f.gcount(); size += static_cast<uint64_t>(n);
-        for (std::streamsize i = 0; i < n; ++i) { hash ^= static_cast<unsigned char>(buf[i]); hash *= UINT64_C(1099511628211); }
+        hash.update(buf, static_cast<size_t>(n));
     }
     if (f.bad()) { e.issues.push_back("Cannot read file"); return e; }
-    std::ostringstream h; h << "fnv1a64:" << std::hex << std::setw(16) << std::setfill('0') << hash;
-    e.fingerprint = h.str();
+    e.sha256 = hash.finish();
+    e.id = std::string(kind == Kind::car ? "car:sha256:" : "track:sha256:") + e.sha256;
     f.clear(); f.seekg(0);
     unsigned char header[16];
     if (!f.read(reinterpret_cast<char*>(header), 16) || std::string(reinterpret_cast<char*>(header), 4) != "0TSR") {
@@ -76,6 +77,18 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     }
     return e;
 }
+bool same_bytes(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::ifstream x(a, std::ios::binary), y(b, std::ios::binary);
+    if (!x || !y) return false;
+    char xb[16384], yb[16384];
+    for (;;) {
+        x.read(xb, sizeof xb); y.read(yb, sizeof yb);
+        const auto n = x.gcount();
+        if (n != y.gcount() || !std::equal(xb, xb+n, yb)) return false;
+        if (x.bad() || y.bad()) return false;
+        if (n < static_cast<std::streamsize>(sizeof xb)) return x.eof() && y.eof();
+    }
+}
 }
 Registry scan(const std::filesystem::path& root) {
     Registry r; std::error_code ec;
@@ -93,10 +106,15 @@ Registry scan(const std::filesystem::path& root) {
         if (ec) { r.issues.push_back("Scan error: " + ec.message()); ec.clear(); }
     }
     std::sort(r.entries.begin(), r.entries.end(), [](const Entry& a, const Entry& b) { return a.path.generic_string() < b.path.generic_string(); });
-    std::set<std::string> fingerprints;
-    for (auto& e : r.entries) {
-        e.id = e.path.lexically_relative(root).generic_string();
-        if (!e.fingerprint.empty() && !fingerprints.insert(e.fingerprint).second) e.possible_duplicate = true;
+    std::map<std::string, std::vector<size_t>> hashes;
+    for (size_t i = 0; i < r.entries.size(); ++i) {
+        auto& e = r.entries[i];
+        if (e.id.empty()) continue;
+        auto& candidates = hashes[e.id];
+        for (size_t j : candidates) {
+            if (same_bytes(e.path, r.entries[j].path)) e.duplicate = r.entries[j].duplicate = true;
+        }
+        candidates.push_back(i);
     }
     return r;
 }
