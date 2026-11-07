@@ -2,11 +2,22 @@
 
 // Read-only inventory of legacy content. Nothing in this API installs or loads a race.
 #include <filesystem>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace content {
 enum class Kind { car, track };
+struct Resource {
+    std::string name;
+    std::string tag; // four on-disk bytes, reversed relative to the resource FourCC
+    uint32_t version;
+    uint32_t size;
+};
+struct Dependency {
+    std::string name;
+    bool present_in_archive = false; // false may still resolve from a shared archive
+};
 struct Entry {
     Kind kind;
     std::filesystem::path path;
@@ -15,6 +26,8 @@ struct Entry {
     std::string sha256;
     bool duplicate = false; // byte-for-byte match of another entry in this scan
     std::vector<std::string> members;
+    std::vector<Resource> resources;
+    std::vector<Dependency> dependencies;
     std::vector<std::string> issues;
     bool valid = false; // container structure only; not a guarantee of playability
 };

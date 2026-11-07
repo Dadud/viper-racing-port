@@ -76,5 +76,25 @@ int main() {
     decoy[32]='X'; write(dir / "decoy.car",decoy);
     assert(!content::scan(dir).entries[0].valid);
     fs::remove_all(dir);
+    fs::create_directories(dir);
+    // Two complete resources for the selected car name, matched case-insensitively.
+    std::vector<unsigned char> car(16+72+8+0x228+8+1,0);
+    car[0]='0'; car[1]='T'; car[2]='S'; car[3]='R'; word(car,4,2);
+    const std::string cf="TEST.CF", model="test0.mod";
+    std::copy(cf.begin(),cf.end(),car.begin()+16);
+    car[32]='F'; car[33]='R'; car[34]='A'; car[35]='C'; word(car,36,6); word(car,40,0x228);
+    std::copy(model.begin(),model.end(),car.begin()+52); word(car,76,1);
+    size_t first=88, second=first+8+0x228;
+    for (size_t at : {first,second}) { car[at+4]='!'; car[at+5]='I'; car[at+6]='G'; car[at+7]='M'; }
+    write(dir / "test.car",car);
+    auto complete=content::scan(dir);
+    assert(complete.entries.size()==1 && complete.entries[0].valid);
+    assert(complete.entries[0].resources.size()==2 && complete.entries[0].resources[0].tag=="FRAC");
+    assert(complete.entries[0].resources[0].version==6 && complete.entries[0].resources[0].size==0x228);
+    assert(complete.entries[0].dependencies.size()==2 && complete.entries[0].dependencies[0].present_in_archive && complete.entries[0].dependencies[1].present_in_archive);
+    assert(complete.entries[0].issues.empty());
+    word(car,36,5); write(dir / "test.car",car);
+    assert(!content::scan(dir).entries[0].issues.empty());
+    fs::remove_all(dir);
     std::cout << "content registry tests passed\n";
 }

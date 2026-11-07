@@ -38,7 +38,7 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     }
     uint32_t count = le32(header + 4);
     if (count > (size - 16) / 36 || count > 1000000) { e.issues.push_back("Invalid directory size"); return e; }
-    struct Member { std::string name, tag; uint32_t size; };
+    struct Member { std::string name, tag; uint32_t version, size; };
     std::vector<Member> dir; dir.reserve(count);
     std::set<std::string> names;
     for (uint32_t i = 0; i < count; ++i) {
@@ -48,7 +48,7 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
         std::string name(reinterpret_cast<char*>(d), len), key = lower(name);
         if (name.empty() || name.find_first_of("/\\") != std::string::npos) { e.issues.push_back("Invalid member name"); return e; }
         if (!names.insert(key).second) e.issues.push_back("Duplicate member name: " + name);
-        dir.push_back({name, std::string(reinterpret_cast<char*>(d + 16), 4), le32(d + 24)});
+        dir.push_back({name, std::string(reinterpret_cast<char*>(d + 16), 4), le32(d + 20), le32(d + 24)});
     }
     uint64_t cursor = 16 + uint64_t(count) * 36;
     for (size_t i = 0; i < dir.size(); ++i) {
@@ -68,12 +68,35 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
             e.issues.push_back("Missing member marker: " + m.name); return e;
         }
         if (uint64_t(m.size) > size - cursor - 8) { e.issues.push_back("Truncated member: " + m.name); return e; }
-        e.members.push_back(m.name); cursor += 8 + uint64_t(m.size);
+        e.members.push_back(m.name);
+        e.resources.push_back({m.name, m.tag, m.version, m.size});
+        cursor += 8 + uint64_t(m.size);
     }
     e.valid = true;
+    // A directory entry without a payload (lockd padding) is not a resource.
+    std::set<std::string> available;
+    for (const auto& resource : e.resources) available.insert(lower(resource.name));
+    if (kind == Kind::car) {
+        // The engine asks for <selected name>.cf and <selected name>0.mod.
+        for (const auto& suffix : {".cf", "0.mod"}) {
+            const auto name = e.name + suffix;
+            const bool present = available.count(lower(name)) != 0;
+            e.dependencies.push_back({name, present});
+            if (!present) e.issues.push_back("Not in car archive (may be shared): " + name);
+        }
+        for (const auto& resource : e.resources) {
+            if (lower(resource.name) == lower(e.name + ".cf") &&
+                (resource.tag != "FRAC" || resource.version != 6 || resource.size != 0x228))
+                e.issues.push_back("Car physics resource has unexpected type, version, or size: " + resource.name);
+        }
+    }
     if (kind == Kind::track) {
         const char* required[] = {"aidef.ccs", "camera.tab", "default.ili", "rdefault.ili", "sky1.tex", "sky2.tex", "sky3.tex", "sky4.tex", "track.bpp", "track.bsp", "track.grf", "track.ild", "track.obt", "track.sol", "trackmap.stp"};
-        for (auto n : required) if (!names.count(n)) e.issues.push_back(std::string("Missing observed track member: ") + n);
+        for (auto n : required) {
+            bool present = available.count(n) != 0;
+            e.dependencies.push_back({n, present});
+            if (!present) e.issues.push_back(std::string("Missing observed track member: ") + n);
+        }
     }
     return e;
 }
