@@ -1,5 +1,6 @@
 #include "../hook/content_registry.h"
 #include "../hook/content_sha256.h"
+#include "../hook/content_preferences.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -40,6 +41,22 @@ int main() {
     assert(content::search(moved,"moved")[0]->id == stable_id);
     assert(content::search(r,"ALP").size()==1);
     assert(!r.entries[1].issues.empty());
+    content::Preferences prefs, loaded;
+    std::string error;
+    auto prefs_path=dir / "favorites.cfg";
+    assert(content::load_preferences(prefs_path,loaded,error) && loaded.favorites.empty());
+    prefs.favorites.insert(stable_id);
+    assert(content::save_preferences(prefs_path,prefs,error));
+    assert(content::load_preferences(prefs_path,loaded,error) && loaded.favorites==prefs.favorites);
+    prefs.favorites.clear();
+    assert(content::save_preferences(prefs_path,prefs,error));
+    assert(content::load_preferences(prefs_path,loaded,error) && loaded.favorites.empty());
+    prefs.favorites.insert("bad id");
+    assert(!content::save_preferences(prefs_path,prefs,error));
+    assert(content::load_preferences(prefs_path,loaded,error) && loaded.favorites.empty());
+    { std::ofstream bad(prefs_path); bad << "viper-content-favorites 1\nwrong\n"; }
+    loaded.favorites.insert(stable_id);
+    assert(!content::load_preferences(prefs_path,loaded,error) && loaded.favorites.count(stable_id)==1);
     fs::remove_all(dir);
     fs::create_directories(dir);
     std::vector<unsigned char> huge(16,0);
