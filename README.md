@@ -307,3 +307,17 @@ again before playing normally.
   (`match_builds.py`, `propagate.py`, `port_sites.py`), type recovery for Ghidra (`recover_types.py`,
   `type_names.py`, `names/`, `ApplyTypes.java`), generators (`gen_com_base.py`, `gen_texture_table.py`, `gen_port_tables.py`, `gen_leftovers.py`), `trace_diff.py`, `session_diff.py`, and `disasm.py` (disassembly with every constant's value and width).
 - `test/` — the offline fuzzer for pure rewrites (`fuzz.cpp`, `fuzz.h`, `build_fuzz.bat`) and a per-file compile check.
+
+### Content inventory development
+
+The read-only native inventory is described in [ARCHITECTURE.md](ARCHITECTURE.md) and
+[MOD_COMPATIBILITY.md](MOD_COMPATIBILITY.md). It is not yet connected to the game's menus or loader.
+Its synthetic, asset-free test can be run with a C++17 compiler:
+
+```sh
+c++ -std=c++17 -Wall -Wextra hook/content_registry.cpp test/content_registry_test.cpp -o /tmp/vp-content-test
+/tmp/vp-content-test
+```
+
+The Linux game build additionally needs the 32-bit dependencies and compiler described above;
+original game files are needed for the existing original-vs-port and replay checks.
