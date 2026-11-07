@@ -30,7 +30,7 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     }
     if (f.bad()) { e.issues.push_back("Cannot read file"); return e; }
     e.sha256 = hash.finish();
-    e.id = std::string(kind == Kind::car ? "car:sha256:" : "track:sha256:") + e.sha256;
+    e.id = std::string(kind == Kind::car ? "car:sha256:" : kind == Kind::track ? "track:sha256:" : "shared:sha256:") + e.sha256;
     f.clear(); f.seekg(0);
     unsigned char header[16];
     if (!f.read(reinterpret_cast<char*>(header), 16) || std::string(reinterpret_cast<char*>(header), 4) != "0TSR") {
@@ -140,6 +140,27 @@ Registry scan(const std::filesystem::path& root) {
         candidates.push_back(i);
     }
     return r;
+}
+Entry inspect_shared(const std::filesystem::path& path) { return inspect(path, Kind::shared); }
+Resolution resolve_resource(const std::string& name, const Entry& primary,
+                            const std::vector<Entry>& shared) {
+    const auto key = lower(name);
+    auto find = [&](const Entry& archive, Resolution& result) {
+        if (!archive.valid) { result.status = ResolutionStatus::indeterminate; result.archive = archive.path; return true; }
+        const Resource* match = nullptr;
+        for (const auto& resource : archive.resources) {
+            if (lower(resource.name) != key) continue;
+            if (match) { result.status = ResolutionStatus::ambiguous; result.archive = archive.path; return true; }
+            match = &resource;
+        }
+        if (!match) return false;
+        result.status = ResolutionStatus::found; result.archive = archive.path; result.resource = *match;
+        return true;
+    };
+    Resolution result;
+    if (find(primary, result)) return result;
+    for (const auto& archive : shared) if (find(archive, result)) return result;
+    return result;
 }
 std::vector<const Entry*> search(const Registry& r, const std::string& query) {
     std::vector<const Entry*> found; auto q = lower(query);
