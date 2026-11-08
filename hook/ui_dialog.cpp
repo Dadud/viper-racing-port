@@ -35,6 +35,7 @@
 #include <string.h>
 #include "port.h"
 #include "ui_types.h"
+#include "ui_string_list_core.h"
 
 namespace {
 namespace ui_dialog {
@@ -1310,14 +1311,8 @@ PORT_FN(0x0047b2e0, "UIStringList::~UIStringList", UIStringList_dtor_n, fp_UIStr
 
 // AddEntry: strncpy into the next entry, terminated; nothing once it's full
 static void __fastcall UIStringList_AddEntry_n(UIStringList* self, Edx, const char* s) {
-    const int32_t n = self->count;
-    if (!(self->capacity > n)) return;
-    ccall<char*>(F_strncpy, self->entries[n], s, (uint32_t)self->entry_size);
-    char** e = self->entries;
-    const int32_t sz = self->entry_size;
-    *(volatile char*)(e[self->count] + sz - 1) = 0;
-    self->count = self->count + 1;
-    self->changes = self->changes + 1;
+    ui_core::string_list_add(self->capacity, self->entry_size, self->count, self->changes, self->entries, s,
+                             [](char* dst, const char* src, uint32_t n) { ccall<char*>(F_strncpy, dst, src, n); });
 }
 static void fp_UIStringList_AddEntry(Footprint& f, UIStringList* self, Edx, const char*) {
     f.add(self, sizeof(UIStringList), "string list");
@@ -1328,28 +1323,17 @@ static void fp_UIStringList_AddEntry(Footprint& f, UIStringList* self, Edx, cons
 PORT_FN(0x0047b320, "UIStringList::AddEntry", UIStringList_AddEntry_n, fp_UIStringList_AddEntry)
 
 static char* __fastcall UIStringList_GetEntry_n(UIStringList* self, Edx, int32_t i) {
-    if (i < 0) return 0;
-    if (!(self->count > i)) return 0;
-    return self->entries[i];
+    return ui_core::string_list_get(self->count, self->entries, i);
 }
 static void fp_UIStringList_GetEntry(Footprint&, UIStringList*, Edx, int32_t) {}
 PORT_FN(0x0047b360, "UIStringList::GetEntry", UIStringList_GetEntry_n, fp_UIStringList_GetEntry)
 
 // DeleteEntry (never called): the later entries copied down (strcpy), count down, changes up; a report for a bad index
 static void __fastcall UIStringList_DeleteEntry_n(UIStringList* self, Edx, int32_t i) {
-    if (i < 0 || i >= self->count) {
+    if (!ui_core::string_list_delete(self->count, self->changes, self->entries, i,
+                                    [](char* dst, const char* src) { crt_strcpy(dst, src); })) {
         UI_LogReport((const char*)0x004f70f4, i);
-        return;
     }
-    if (i + 1 < self->count) {
-        do {
-            char** e = self->entries + i;
-            i++;
-            crt_strcpy(e[0], e[1]);
-        } while (i + 1 < self->count);
-    }
-    self->count = self->count - 1;
-    self->changes = self->changes + 1;
 }
 static void fp_UIStringList_DeleteEntry(Footprint& f, UIStringList* self, Edx, int32_t i) {
     f.add(self, sizeof(UIStringList), "string list");
