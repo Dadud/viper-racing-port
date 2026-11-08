@@ -1,0 +1,7 @@
+# Build tools/Dockerfile.linux-build as viper-linux-build before this image.
+# QEMU runs ordinary i386 tests on kernels without IA32 support. It is not a
+# substitute for native x86 signal/exception or physics-regression testing.
+ARG BASE_IMAGE=viper-linux-build
+FROM ${BASE_IMAGE}
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends qemu-user && \
+    rm -rf /var/lib/apt/lists/*

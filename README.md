@@ -329,6 +329,20 @@ with the host compiler (64-bit on a 64-bit host). The script also exercises the 
 the current game still requires its 32-bit x86 runtime. See [ARCHITECTURE.md](ARCHITECTURE.md)
 for the migration constraints.
 
+To run the portable tests as i386 on a 64-bit-only kernel, after building the Linux build image above:
+
+```sh
+docker build -f tools/Dockerfile.i386-tests -t viper-i386-tests .
+docker run --rm -v "$PWD:/src" -w /src -e CXXFLAGS=-m32 -e VP_TEST_RUNNER=qemu-i386 -e VP_PORTABLE_TEST_DIR=out-linux/portable32 viper-i386-tests bash tools/test_portable.sh
+```
+
+QEMU is useful for ordinary portability tests, but the SEH fault test has shown different
+exception details under emulation. Use native i386 for exception and physics parity checks.
+
+The optional `test/x87_parity_corpus.cpp` diagnostic prints per-case floating-point results;
+its source lists GCC 15 commands for i386 and x86-64. Compare the output against a native
+i386 run before drawing conclusions about physics parity.
+
 ### Content inventory development
 
 The read-only native inventory is described in [ARCHITECTURE.md](ARCHITECTURE.md) and
