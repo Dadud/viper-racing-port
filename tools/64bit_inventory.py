@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRATION = re.compile(r'\b(PORT_FN(?:_BUILDS|_GL|_AUDIO)?)\s*\(')
+DISPATCH = re.compile(r'\b(ccall|tcall|vcall)\s*<')
 ADDRESS = re.compile(r'\b0[xX][0-9a-fA-F]+(?:[uUlL]+)?\b')
 LITERAL = re.compile(r'0[xX][0-9a-fA-F]+(?:[uUlL]+)?\Z')
 
@@ -102,6 +103,41 @@ def parse_integer(text: str) -> int | None:
     return int(re.sub(r'[uUlL]+$', '', s), 16) if LITERAL.fullmatch(s) else None
 
 
+def dispatch_sites(path: str, source: str) -> list[dict]:
+    """Record wrapper call operands without claiming they are resolved call edges."""
+    code = masked(source, strings=True)
+    lines = [i for i, ch in enumerate(source) if ch == "\n"]
+    def line_number(pos: int) -> int: return bisect.bisect_left(lines, pos) + 1
+    result = []
+    for match in DISPATCH.finditer(code):
+        depth, end = 1, match.end()
+        while end < len(code) and depth:
+            if code[end] == '<': depth += 1
+            elif code[end] == '>': depth -= 1
+            end += 1
+        if depth:
+            continue
+        while end < len(code) and code[end].isspace(): end += 1
+        if end == len(code) or code[end] != '(': continue
+        args = first_args(code, end + 1, 2 if match.group(1) == 'vcall' else 1)
+        if not args: continue
+        expressions = [code[a:b].strip() for a, b in args]
+        site = {'file': path, 'line': line_number(match.start()), 'wrapper': match.group(1)}
+        if match.group(1) == 'vcall':
+            site['receiver_expression'] = expressions[0]
+            if len(expressions) > 1: site['slot_expression'] = expressions[1]
+        else:
+            target = expressions[0]
+            site['target_expression'] = target
+            literal = ADDRESS.fullmatch(target)
+            site['target_kind'] = 'literal_address' if literal else ('symbol' if re.fullmatch(r'[A-Za-z_]\w*(?:::\w+)*', target) else 'expression')
+            if literal:
+                value = parse_integer(target)
+                site['address'] = f'0x{value:08x}' if value is not None else None
+        result.append(site)
+    return result
+
+
 def scan_source(path: str, source: str) -> tuple[list[dict], list[dict], list[dict]]:
     code = masked(source, strings=True)
     # Keep original literal contents for extracting the name, but comments and
@@ -143,13 +179,14 @@ def scan_source(path: str, source: str) -> tuple[list[dict], list[dict], list[di
 
 
 def inventory(directory: Path) -> dict:
-    registrations, unresolved, addresses = [], [], []
+    registrations, unresolved, addresses, dispatches = [], [], [], []
     files = sorted(directory.glob('*.cpp'))
     for path in files:
         # Replacement preserves the ability to inventory source files with legacy bytes.
         text = path.read_text(encoding='utf-8', errors='replace')
         regs, warnings, refs = scan_source(path.name, text)
         registrations.extend(regs); unresolved.extend(warnings); addresses.extend(refs)
+        dispatches.extend(dispatch_sites(path.name, text))
     targets = {r['address'] for r in registrations if r['address'] is not None}
     for r in addresses:
         r['matches_registration'] = r['address'] in targets
@@ -162,9 +199,12 @@ def inventory(directory: Path) -> dict:
         'summary': {'source_files': len(files), 'registrations': len(registrations),
                     'unique_literal_registration_addresses': len(targets),
                     'unresolved_registrations': len(unresolved), 'guest_range_literal_occurrences': len(addresses),
+                    'dispatch_sites': len(dispatches),
+                    'dispatch_sites_by_wrapper': dict(sorted(Counter(r['wrapper'] for r in dispatches).items())),
                     'address_categories': dict(sorted(Counter(r['category'] for r in addresses).items())),
                     'registration_count_by_file': dict(sorted(by_file.items()))},
         'registrations': registrations, 'unresolved': unresolved, 'address_occurrences': addresses,
+        'dispatch_sites': dispatches,
     }
 
 

@@ -42,6 +42,19 @@ const auto q = 0x1234;
         self.assertEqual(regs, [])
         self.assertEqual(warnings[0]['reason'], 'cannot parse first three arguments')
 
+    def test_dispatch_inventory_preserves_unresolved_expressions(self):
+        source = '''ccall<void>(F_DoThing, value);\n'''
+        source += '''tcall<int>(F_Method, self, value);\n'''
+        source += '''vcall<void>(object, slot, argument);\n'''
+        source += '''ccall<int>((FunctionType)0x00401234, value);\n'''
+        sites = mod.dispatch_sites('calls.cpp', source)
+        self.assertEqual([s['wrapper'] for s in sites], ['ccall', 'tcall', 'vcall', 'ccall'])
+        self.assertEqual(sites[0]['target_kind'], 'symbol')
+        self.assertEqual(sites[1]['target_expression'], 'F_Method')
+        self.assertEqual(sites[2]['receiver_expression'], 'object')
+        self.assertEqual(sites[2]['slot_expression'], 'slot')
+        self.assertEqual(sites[3]['target_kind'], 'expression')
+
     def test_deterministic_cli_and_source_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
