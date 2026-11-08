@@ -17,4 +17,7 @@ struct Pe32Info {
 // Validates the headers and sections the loader reads, without executing the image.
 // On failure, out is unchanged and error describes the first rejected condition.
 bool inspect_pe32(const uint8_t* data, size_t size, Pe32Info& out, std::string& error);
+// Copy a validated image into a distinct host buffer, zero-filling virtual space.
+// No output bytes are changed if validation or the capacity check fails.
+bool map_pe32(const uint8_t* data, size_t size, uint8_t* output, size_t capacity, std::string& error);
 }

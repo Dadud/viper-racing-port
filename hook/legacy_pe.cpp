@@ -1,4 +1,5 @@
 #include "legacy_pe.h"
+#include <cstring>
 
 namespace legacy {
 namespace {
@@ -38,4 +39,23 @@ bool inspect_pe32(const uint8_t* data, size_t size, Pe32Info& out, std::string& 
     out = info;
     return true;
 }
+bool map_pe32(const uint8_t* data, size_t size, uint8_t* output, size_t capacity, std::string& error) {
+    Pe32Info info;
+    if (!inspect_pe32(data, size, info, error)) return false;
+    if (!output || capacity < info.image_size) { error = "PE output buffer is too small"; return false; }
+    // PE source and destination are distinct: the loader maps a new image.
+    const uint64_t opt = uint64_t(info.nt_offset) + 24;
+    const uint64_t table = opt + u16(data + info.nt_offset + 20);
+    std::memset(output, 0, info.image_size);
+    std::memcpy(output, data, info.header_size);
+    for (uint16_t i = 0; i < info.section_count; ++i) {
+        const uint8_t* section = data + table + uint64_t(i) * 40;
+        const uint32_t virtual_size = u32(section + 8), address = u32(section + 12);
+        const uint32_t raw_size = u32(section + 16), raw_offset = u32(section + 20);
+        const uint32_t copied = virtual_size && virtual_size < raw_size ? virtual_size : raw_size;
+        if (copied) std::memcpy(output + address, data + raw_offset, copied);
+    }
+    return true;
+}
+
 }

@@ -209,16 +209,11 @@ int map_image(Image& im, const std::string& path) {
     im.base = (uint8_t*)(uintptr_t)BASE;
     const uint32_t hdrs = im.nt->OptionalHeader.SizeOfHeaders;
     if (hdrs > im.file.size() || hdrs > V10_IMAGE) return refuse("viperport: %s's headers are damaged", path.c_str());
-    memcpy(im.base, im.file.data(), hdrs);
+    std::string map_error;
+    if (!legacy::map_pe32(im.file.data(), im.file.size(), im.base, V10_IMAGE, map_error))
+        return refuse("viperport: %s's image could not be mapped: %s", path.c_str(), map_error.c_str());
     const IMAGE_SECTION_HEADER* s = IMAGE_FIRST_SECTION(im.nt);
     const int n = im.nt->FileHeader.NumberOfSections;
-    for (int i = 0; i < n; i++) {
-        const uint32_t raw = s[i].SizeOfRawData < s[i].Misc.VirtualSize || !s[i].Misc.VirtualSize ? s[i].SizeOfRawData
-                                                                                                   : s[i].Misc.VirtualSize;
-        if (s[i].PointerToRawData + (uint64_t)raw > im.file.size() || s[i].VirtualAddress + (uint64_t)raw > V10_IMAGE)
-            return refuse("viperport: race.exe's section %.8s isn't what the file holds once mapped", (const char*)s[i].Name);
-        if (raw) memcpy(im.base + s[i].VirtualAddress, im.file.data() + s[i].PointerToRawData, raw);
-    }
     // the view holds exactly the file's sections (what the audit compares against)
     for (int i = 0; i < n; i++) {
         const uint32_t raw = s[i].SizeOfRawData < s[i].Misc.VirtualSize || !s[i].Misc.VirtualSize ? s[i].SizeOfRawData

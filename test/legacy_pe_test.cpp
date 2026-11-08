@@ -13,10 +13,22 @@ int main() {
     const size_t o=0x98, sec=o+224;
     u16(f,o,0x10b); u32(f,o+28,0x400000); u32(f,o+56,0x2000); u32(f,o+60,0x200);
     u32(f,sec+8,0x100); u32(f,sec+12,0x1000); u32(f,sec+16,0x100); u32(f,sec+20,0x200);
+    f[0x200]=0x5a; f[0x2ff]=0xa5;
     legacy::Pe32Info info; std::string error;
     assert(legacy::inspect_pe32(f.data(),f.size(),info,error));
     assert(info.nt_offset==0x80 && info.machine==0x14c && info.section_count==1 && info.image_base==0x400000);
     assert(info.timestamp==0x362de68c && info.image_size==0x2000 && info.header_size==0x200);
+    std::vector<uint8_t> mapped(0x2000,0xcc);
+    assert(legacy::map_pe32(f.data(),f.size(),mapped.data(),mapped.size(),error));
+    assert(mapped[0]=='M' && mapped[0x1000]==0x5a && mapped[0x10ff]==0xa5);
+    assert(mapped[0x200]==0 && mapped[0x1100]==0 && mapped.back()==0);
+    std::vector<uint8_t> too_small(0x1fff,0xcc);
+    assert(!legacy::map_pe32(f.data(),f.size(),too_small.data(),too_small.size(),error));
+    assert(too_small[0]==0xcc && too_small.back()==0xcc);
+    auto invalid_map=f; u32(invalid_map,sec+20,0xfffffffe);
+    mapped.assign(mapped.size(),0xcc);
+    assert(!legacy::map_pe32(invalid_map.data(),invalid_map.size(),mapped.data(),mapped.size(),error));
+    assert(mapped[0]==0xcc && mapped.back()==0xcc);
     for (size_t n : {size_t(0),size_t(63),size_t(0x90),sec+39}) {
         legacy::Pe32Info unchanged; unchanged.image_base=123;
         assert(!legacy::inspect_pe32(f.data(),n,unchanged,error) && unchanged.image_base==123 && !error.empty());
