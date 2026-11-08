@@ -324,7 +324,7 @@ that supports 32-bit x86. The original game files are still needed to run the ga
 
 ### Portable 64-bit development tests
 
-`bash tools/test_portable.sh` builds and runs the asset-free address-view and content tests
+`bash tools/test_portable.sh` builds and runs the asset-free address-view, PE32 inspection, and content tests
 with the host compiler (64-bit on a 64-bit host). These tests do **not** build a 64-bit game;
 the current game still requires its 32-bit x86 runtime. See [ARCHITECTURE.md](ARCHITECTURE.md)
 for the migration constraints.

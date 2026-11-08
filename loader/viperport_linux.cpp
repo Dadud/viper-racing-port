@@ -45,6 +45,7 @@
 #include <vector>
 #include "../hook/standalone.h"
 #include "../hook/content_sha256.h"
+#include "../hook/legacy_pe.h"
 #include "../hook/vp_os.h"
 #include "../hook/vp_os_linux.h"
 #include "../hook/w32_kernel.h"
@@ -171,11 +172,9 @@ struct Image {
 };
 
 const IMAGE_NT_HEADERS32* headers_of(const std::vector<uint8_t>& f) {
-    if (f.size() < 0x400 || f[0] != 'M' || f[1] != 'Z') return 0;
-    const uint32_t pe = *(const uint32_t*)&f[0x3c];
-    if (pe + sizeof(IMAGE_NT_HEADERS32) > f.size()) return 0;
-    const IMAGE_NT_HEADERS32* nt = (const IMAGE_NT_HEADERS32*)&f[pe];
-    return nt->Signature == IMAGE_NT_SIGNATURE ? nt : 0;
+    legacy::Pe32Info info; std::string error;
+    if (f.size() < 0x400 || !legacy::inspect_pe32(f.data(), f.size(), info, error)) return 0;
+    return reinterpret_cast<const IMAGE_NT_HEADERS32*>(f.data() + info.nt_offset);
 }
 
 bool read_file(const std::string& path, std::vector<uint8_t>& out) {
