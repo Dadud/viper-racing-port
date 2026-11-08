@@ -114,6 +114,7 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
             if (!present) e.issues.push_back(std::string("Missing observed track member: ") + n);
         }
     }
+    resolve_dependencies(e, {});
     return e;
 }
 bool same_bytes(const std::filesystem::path& a, const std::filesystem::path& b) {
@@ -177,6 +178,13 @@ Resolution resolve_resource(const std::string& name, const Entry& primary,
     if (find(primary, result)) return result;
     for (const auto& archive : shared) if (find(archive, result)) return result;
     return result;
+}
+void resolve_dependencies(Entry& primary, const std::vector<Entry>& shared) {
+    for (auto& dependency : primary.dependencies) {
+        const auto result = resolve_resource(dependency.name, primary, shared);
+        dependency.status = result.status;
+        dependency.resolved_archive = result.archive;
+    }
 }
 std::vector<const Entry*> search(const Registry& r, const std::string& query) {
     std::vector<const Entry*> found; auto q = lower(query);

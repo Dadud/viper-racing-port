@@ -126,10 +126,22 @@ int main() {
     assert(complete.entries[0].resources.size()==2 && complete.entries[0].resources[0].tag=="FRAC");
     assert(complete.entries[0].resources[0].version==6 && complete.entries[0].resources[0].size==0x228);
     assert(complete.entries[0].dependencies.size()==2 && complete.entries[0].dependencies[0].present_in_archive && complete.entries[0].dependencies[1].present_in_archive);
+    assert(complete.entries[0].dependencies[0].status==content::ResolutionStatus::found &&
+           complete.entries[0].dependencies[0].resolved_archive==complete.entries[0].path);
     assert(complete.entries[0].issues.empty());
     write(dir / "shared.res",car);
     auto shared=content::inspect_shared(dir / "shared.res");
     assert(shared.valid && shared.kind==content::Kind::shared);
+    auto partially_shared=complete.entries[0];
+    partially_shared.resources.pop_back();
+    partially_shared.dependencies[1].present_in_archive=false;
+    content::resolve_dependencies(partially_shared,{shared});
+    assert(partially_shared.dependencies[0].status==content::ResolutionStatus::found &&
+           partially_shared.dependencies[0].resolved_archive==partially_shared.path);
+    assert(partially_shared.dependencies[1].status==content::ResolutionStatus::found &&
+           partially_shared.dependencies[1].resolved_archive==shared.path);
+    content::resolve_dependencies(partially_shared,{});
+    assert(partially_shared.dependencies[1].status==content::ResolutionStatus::missing);
     content::Entry primary{}; primary.valid=true; primary.path="primary.car";
     auto found=content::resolve_resource("test.cf",primary,{shared});
     assert(found.status==content::ResolutionStatus::found && found.archive==shared.path && found.resource.version==6);
@@ -139,6 +151,10 @@ int main() {
     assert(found.archive==primary.path && found.resource.version==5);
     primary.resources.push_back({"test.CF","FRAC",6,0x228});
     assert(content::resolve_resource("test.cf",primary,{shared}).status==content::ResolutionStatus::ambiguous);
+    primary.dependencies.push_back({"test.cf",true});
+    content::resolve_dependencies(primary,{shared});
+    assert(primary.dependencies[0].status==content::ResolutionStatus::ambiguous &&
+           primary.dependencies[0].resolved_archive==primary.path);
     primary.resources.clear();
     content::Entry invalid_shared{}; invalid_shared.path="broken.res";
     assert(content::resolve_resource("test.cf",primary,{invalid_shared,shared}).status==content::ResolutionStatus::indeterminate);

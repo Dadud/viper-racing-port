@@ -4,10 +4,12 @@
 #include <filesystem>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace content {
 enum class Kind { car, track, shared };
+enum class ResolutionStatus { found, missing, ambiguous, indeterminate };
 struct Resource {
     std::string name;
     std::string tag; // four on-disk bytes, reversed relative to the resource FourCC
@@ -15,8 +17,13 @@ struct Resource {
     uint32_t size;
 };
 struct Dependency {
+    Dependency() = default;
+    Dependency(std::string resource_name, bool local)
+        : name(std::move(resource_name)), present_in_archive(local) {}
     std::string name;
     bool present_in_archive = false; // false may still resolve from a shared archive
+    ResolutionStatus status = ResolutionStatus::missing; // updated by resolve_dependencies
+    std::filesystem::path resolved_archive;
 };
 struct Entry {
     Kind kind;
@@ -37,7 +44,6 @@ struct Entry {
     std::vector<std::string> issues;
     bool valid = false; // container structure only; not a guarantee of playability
 };
-enum class ResolutionStatus { found, missing, ambiguous, indeterminate };
 struct Resolution {
     ResolutionStatus status = ResolutionStatus::missing;
     std::filesystem::path archive;
@@ -56,5 +62,8 @@ Entry inspect_shared(const std::filesystem::path& path);
 // inventory helper and does not change the game's actual resource lookup.
 Resolution resolve_resource(const std::string& name, const Entry& primary,
                             const std::vector<Entry>& shared);
+// Resolves each observed dependency using the selected entry first, then the
+// caller's shared archive order. This updates status and resolved_archive only.
+void resolve_dependencies(Entry& primary, const std::vector<Entry>& shared);
 std::vector<const Entry*> search(const Registry& registry, const std::string& text);
 }
