@@ -2,6 +2,8 @@
 #include "content_manifest.h"
 #include "content_sha256.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <map>
@@ -157,6 +159,176 @@ Registry scan(const std::filesystem::path& root) {
         candidates.push_back(i);
     }
     return r;
+}
+InstallResult install_archive(const std::filesystem::path& source, const std::filesystem::path& library_root) {
+    InstallResult result;
+    auto reject = [&](InstallStatus status, std::string error) {
+        result.status = status;
+        result.error = std::move(error);
+        return result;
+    };
+    std::error_code ec;
+    const auto source_status = std::filesystem::symlink_status(source, ec);
+    if (ec || std::filesystem::is_symlink(source_status) || !std::filesystem::is_regular_file(source_status))
+        return reject(InstallStatus::rejected, "Source must be a regular archive file, not a symlink");
+    const auto extension = lower(source.extension().string());
+    if (extension != ".car" && extension != ".trk" && extension != ".tra")
+        return reject(InstallStatus::rejected, "Unsupported legacy archive extension");
+    const Kind kind = extension == ".car" ? Kind::car : Kind::track;
+    const Entry package = inspect(source, kind);
+    if (!package.valid) return reject(InstallStatus::rejected, package.issues.empty() ? "Invalid archive" : package.issues.front());
+    if (source.filename().empty() || source.filename() == "." || source.filename() == "..")
+        return reject(InstallStatus::rejected, "Source archive has no usable filename");
+    result.warnings = package.issues;
+    if (package.metadata_present && !package.metadata_valid)
+        result.warnings.push_back(package.metadata_issue);
+
+    const auto kind_root = library_root / (kind == Kind::car ? "cars" : "tracks");
+    const auto stage_root = library_root / ".staging";
+    std::filesystem::create_directories(kind_root, ec);
+    if (ec) return reject(InstallStatus::error, "Cannot create content library: " + ec.message());
+    auto kind_status = std::filesystem::symlink_status(kind_root, ec);
+    if (ec || std::filesystem::is_symlink(kind_status) || !std::filesystem::is_directory(kind_status))
+        return reject(InstallStatus::error, "Content library kind directory is not a real directory");
+    std::filesystem::create_directories(stage_root, ec);
+    if (ec) return reject(InstallStatus::error, "Cannot create content staging directory: " + ec.message());
+    auto stage_status = std::filesystem::symlink_status(stage_root, ec);
+    if (ec || std::filesystem::is_symlink(stage_status) || !std::filesystem::is_directory(stage_status))
+        return reject(InstallStatus::error, "Content staging path is not a real directory");
+
+    const auto destination = kind_root / package.sha256;
+    auto existing_status = std::filesystem::symlink_status(destination, ec);
+    if (!ec && existing_status.type() != std::filesystem::file_type::not_found) {
+        if (std::filesystem::is_symlink(existing_status) || !std::filesystem::is_directory(existing_status))
+            return reject(InstallStatus::error, "Content ID destination is not a real directory");
+        std::filesystem::directory_iterator it(destination, ec), end;
+        for (; !ec && it != end; it.increment(ec)) {
+            const auto item_status = it->symlink_status(ec);
+            if (ec || std::filesystem::is_symlink(item_status) || !std::filesystem::is_regular_file(item_status)) continue;
+            if (lower(it->path().extension().string()) != extension) continue;
+            const Entry installed = inspect(it->path(), kind);
+            if (installed.valid && installed.sha256 == package.sha256) {
+                result.status = InstallStatus::already_installed;
+                result.archive_path = it->path();
+                return result;
+            }
+        }
+        if (ec) return reject(InstallStatus::error, "Cannot inspect content ID destination: " + ec.message());
+        return reject(InstallStatus::error, "Content ID destination exists but has no matching archive");
+    }
+    if (ec != std::errc::no_such_file_or_directory && ec)
+        return reject(InstallStatus::error, "Cannot inspect content ID destination: " + ec.message());
+
+    static std::atomic<uint64_t> sequence{0};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto stage = stage_root / (package.sha256 + "." + std::to_string(stamp) + "." + std::to_string(sequence++));
+    if (!std::filesystem::create_directory(stage, ec) || ec)
+        return reject(InstallStatus::error, "Cannot create temporary install directory: " + ec.message());
+    auto cleanup = [&]() { std::error_code ignored; std::filesystem::remove_all(stage, ignored); };
+    const auto staged_archive = stage / source.filename();
+    if (!std::filesystem::copy_file(source, staged_archive, std::filesystem::copy_options::none, ec)) {
+        cleanup();
+        return reject(InstallStatus::error, "Cannot copy archive into staging directory: " + ec.message());
+    }
+    const Entry staged = inspect(staged_archive, kind);
+    if (!staged.valid || staged.sha256 != package.sha256) {
+        cleanup();
+        return reject(InstallStatus::error, "Source archive changed while it was being installed");
+    }
+    if (package.metadata_present && package.metadata_valid) {
+        auto source_manifest = source;
+        source_manifest += ".json";
+        auto staged_manifest = staged_archive;
+        staged_manifest += ".json";
+        if (!std::filesystem::copy_file(source_manifest, staged_manifest, std::filesystem::copy_options::none, ec)) {
+            cleanup();
+            return reject(InstallStatus::error, "Cannot copy metadata sidecar: " + ec.message());
+        }
+        const auto staged_metadata = load_manifest(staged_archive);
+        if (!staged_metadata.present || !staged_metadata.valid || staged_metadata.metadata.author != package.author ||
+            staged_metadata.metadata.version != package.version || staged_metadata.metadata.description != package.description) {
+            cleanup();
+            return reject(InstallStatus::error, "Metadata sidecar changed while it was being installed");
+        }
+    }
+    std::filesystem::rename(stage, destination, ec);
+    if (ec) {
+        auto final_status = std::filesystem::symlink_status(destination, ec);
+        if (!ec && std::filesystem::is_directory(final_status) && !std::filesystem::is_symlink(final_status)) {
+            std::filesystem::directory_iterator it(destination, ec), end;
+            for (; !ec && it != end; it.increment(ec)) {
+                const auto item_status = it->symlink_status(ec);
+                if (ec || std::filesystem::is_symlink(item_status) || !std::filesystem::is_regular_file(item_status) ||
+                    lower(it->path().extension().string()) != extension) continue;
+                const Entry installed = inspect(it->path(), kind);
+                if (installed.valid && installed.sha256 == package.sha256) {
+                    cleanup();
+                    result.status = InstallStatus::already_installed;
+                    result.archive_path = it->path();
+                    return result;
+                }
+            }
+        }
+        cleanup();
+        return reject(InstallStatus::error, ec ? "Cannot publish installed archive: " + ec.message()
+                                               : "Content ID appeared during install but did not match");
+    }
+    result.status = InstallStatus::installed;
+    result.archive_path = destination / source.filename();
+    return result;
+}
+bool uninstall_archive(const std::filesystem::path& library_root, const std::string& id, std::string& error) {
+    error.clear();
+    const std::string car_prefix = "car:sha256:", track_prefix = "track:sha256:";
+    const bool car = id.compare(0, car_prefix.size(), car_prefix) == 0;
+    const size_t hash_offset = car ? car_prefix.size() : track_prefix.size();
+    if (!car && id.compare(0, track_prefix.size(), track_prefix) != 0) {
+        error = "Unsupported content ID"; return false;
+    }
+    if (id.size() != hash_offset + 64) { error = "Invalid content ID"; return false; }
+    const std::string hash = id.substr(hash_offset);
+    for (char c : hash) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+        error = "Invalid content ID"; return false;
+    }
+    const Kind kind = car ? Kind::car : Kind::track;
+    const auto package_dir = library_root / (car ? "cars" : "tracks") / hash;
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(package_dir, ec);
+    if (ec || status.type() == std::filesystem::file_type::not_found) {
+        error = "Installed content not found"; return false;
+    }
+    if (std::filesystem::is_symlink(status) || !std::filesystem::is_directory(status)) {
+        error = "Installed content path is not a real directory"; return false;
+    }
+    std::vector<std::filesystem::path> matches;
+    std::filesystem::directory_iterator it(package_dir, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto item_status = it->symlink_status(ec);
+        if (ec || std::filesystem::is_symlink(item_status) || !std::filesystem::is_regular_file(item_status)) continue;
+        const auto ext = lower(it->path().extension().string());
+        if ((kind == Kind::car && ext != ".car") ||
+            (kind == Kind::track && ext != ".trk" && ext != ".tra")) continue;
+        if (inspect(it->path(), kind).id == id) matches.push_back(it->path());
+    }
+    if (ec) { error = "Cannot inspect installed content: " + ec.message(); return false; }
+    if (matches.empty()) { error = "Installed archive does not match content ID"; return false; }
+    for (const auto& archive : matches) {
+        if (!std::filesystem::remove(archive, ec) || ec) {
+            error = "Cannot remove installed archive: " + ec.message(); return false;
+        }
+        auto sidecar = archive; sidecar += ".json";
+        ec.clear();
+        const auto sidecar_status = std::filesystem::symlink_status(sidecar, ec);
+        if (!ec && (std::filesystem::is_regular_file(sidecar_status) || std::filesystem::is_symlink(sidecar_status))) {
+            std::filesystem::remove(sidecar, ec);
+            if (ec) { error = "Archive removed but its metadata sidecar could not be removed: " + ec.message(); return false; }
+        } else if (ec != std::errc::no_such_file_or_directory && ec) {
+            error = "Archive removed but its metadata sidecar could not be inspected: " + ec.message(); return false;
+        }
+    }
+    ec.clear();
+    std::filesystem::remove(package_dir, ec); // preserve unrelated files left in the package directory
+    return true;
 }
 Entry inspect_shared(const std::filesystem::path& path) { return inspect(path, Kind::shared); }
 Resolution resolve_resource(const std::string& name, const Entry& primary,

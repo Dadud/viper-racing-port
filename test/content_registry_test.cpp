@@ -132,6 +132,30 @@ int main() {
     write(dir / "shared.res",car);
     auto shared=content::inspect_shared(dir / "shared.res");
     assert(shared.valid && shared.kind==content::Kind::shared);
+    { std::ofstream f(dir / "test.car.json");
+      f << "{\"schema_version\":1,\"author\":\"Viper Community\",\"version\":\"1.0\",\"description\":\"Fixture car\"}"; }
+    const auto library = dir / "library";
+    const auto original_id = complete.entries[0].id;
+    auto installed = content::install_archive(dir / "test.car", library);
+    assert(installed.status==content::InstallStatus::installed && fs::is_regular_file(installed.archive_path));
+    assert(fs::is_regular_file(dir / "test.car") && fs::is_regular_file(dir / "test.car.json"));
+    auto installed_registry=content::scan(library);
+    assert(installed_registry.entries.size()==1 && installed_registry.entries[0].id==original_id);
+    assert(installed_registry.entries[0].author=="Viper Community");
+    auto repeated=content::install_archive(dir / "test.car", library);
+    assert(repeated.status==content::InstallStatus::already_installed && repeated.archive_path==installed.archive_path);
+    auto rejected=content::install_archive(dir / "shared.res", library);
+    assert(rejected.status==content::InstallStatus::rejected);
+    std::string uninstall_error;
+    const auto keep_file=installed.archive_path.parent_path() / "local-note.txt";
+    { std::ofstream f(keep_file); f << "preserve files outside the package"; }
+    assert(content::uninstall_archive(library,original_id,uninstall_error));
+    assert(fs::is_regular_file(dir / "test.car") && fs::is_regular_file(dir / "test.car.json"));
+    auto installed_manifest=installed.archive_path; installed_manifest += ".json";
+    assert(!fs::exists(installed.archive_path) && !fs::exists(installed_manifest));
+    assert(fs::is_regular_file(keep_file) && content::scan(library).entries.empty());
+    assert(!content::uninstall_archive(library,original_id,uninstall_error));
+    assert(!content::uninstall_archive(library,"bad-id",uninstall_error));
     auto partially_shared=complete.entries[0];
     partially_shared.resources.pop_back();
     partially_shared.dependencies[1].present_in_archive=false;
@@ -167,7 +191,9 @@ int main() {
     assert(!content::search(content::scan(dir), "bad-boundary")[0]->valid);
     fs::remove(dir / "bad-boundary.car");
     word(car,36,5); write(dir / "test.car",car);
-    assert(!content::scan(dir).entries[0].issues.empty());
+    auto changed_content=content::scan(dir);
+    auto local_test=std::find_if(changed_content.entries.begin(),changed_content.entries.end(),[&](const content::Entry& e) { return e.path==dir/"test.car"; });
+    assert(local_test!=changed_content.entries.end() && !local_test->issues.empty());
     fs::remove_all(dir);
     std::cout << "content registry tests passed\n";
 }

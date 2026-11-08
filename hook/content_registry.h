@@ -53,8 +53,20 @@ struct Registry {
     std::vector<Entry> entries;
     std::vector<std::string> issues;
 };
+enum class InstallStatus { installed, already_installed, rejected, error };
+struct InstallResult {
+    InstallStatus status = InstallStatus::error;
+    std::filesystem::path archive_path;
+    std::vector<std::string> warnings;
+    std::string error;
+};
 // Recursively scans regular .car, .trk and .tra files, without following symlinks.
 Registry scan(const std::filesystem::path& root);
+// Validates and copies one loose 0TSR package into <library>/{cars,tracks}/<sha256>/.
+// Source files remain untouched; the matching valid JSON sidecar is copied with it.
+InstallResult install_archive(const std::filesystem::path& source, const std::filesystem::path& library_root);
+// Removes only the archive and sidecar previously installed for this stable content ID.
+bool uninstall_archive(const std::filesystem::path& library_root, const std::string& id, std::string& error);
 // Inspect a .res-style shared 0TSR archive without adding it to car/track lists.
 Entry inspect_shared(const std::filesystem::path& path);
 // Search primary first, then shared archives in the caller-supplied order. An invalid
