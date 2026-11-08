@@ -23,7 +23,8 @@ bool inspect_pe32(const uint8_t* data, size_t size, Pe32Info& out, std::string& 
     Pe32Info info;
     info.nt_offset = pe; info.machine = u16(file); info.section_count = sections; info.timestamp = u32(file + 4);
     info.image_base = u32(data + opt + 28); info.image_size = u32(data + opt + 56); info.header_size = u32(data + opt + 60);
-    if (!info.image_size || info.header_size > size || info.header_size > info.image_size || table + uint64_t(sections)*40 > info.header_size)
+    if (!info.image_size || uint64_t(info.image_base) + info.image_size > (uint64_t{1} << 32) ||
+        info.header_size > size || info.header_size > info.image_size || table + uint64_t(sections)*40 > info.header_size)
         return fail("Invalid PE image or header size");
     for (uint16_t i = 0; i < sections; ++i) {
         const uint8_t* section = data + table + uint64_t(i) * 40;

@@ -28,5 +28,32 @@ int main() {
     bad=f; u32(bad,sec+20,0xfffffffe); assert(!legacy::inspect_pe32(bad.data(),bad.size(),info,error));
     bad=f; u32(bad,sec+12,0x1fff); assert(!legacy::inspect_pe32(bad.data(),bad.size(),info,error));
     bad=f; u32(bad,o+60,0x100); assert(!legacy::inspect_pe32(bad.data(),bad.size(),info,error));
+    bad=f; u32(bad,o+28,0xffffe001u); assert(!legacy::inspect_pe32(bad.data(),bad.size(),info,error));
+    bad=f; u32(bad,o+28,0xffffe000u); assert(legacy::inspect_pe32(bad.data(),bad.size(),info,error));
+    // Every truncated prefix is rejected or accepted safely; no out-of-bounds reads.
+    for (size_t n=0; n<f.size(); ++n) {
+        legacy::Pe32Info result; std::string why;
+        if (legacy::inspect_pe32(f.data(),n,result,why)) {
+            assert(why.empty() && result.header_size<=n && n>=0x300);
+        } else assert(!why.empty());
+    }
+    // Mutated headers exercise arithmetic and section-table bounds independently
+    // of native pointer width. The seed makes failures reproducible.
+    uint32_t rng=0x51329a47;
+    for (int iteration=0; iteration<20000; ++iteration) {
+        bad=f;
+        for (int j=0; j<8; ++j) {
+            rng^=rng<<13; rng^=rng>>17; rng^=rng<<5;
+            const size_t at=rng % 0x1a0;
+            rng^=rng<<13; rng^=rng>>17; rng^=rng<<5;
+            bad[at]=static_cast<uint8_t>(rng);
+        }
+        legacy::Pe32Info result; std::string why;
+        if (legacy::inspect_pe32(bad.data(),bad.size(),result,why)) {
+            assert(why.empty());
+            assert(uint64_t(result.image_base)+result.image_size <= (uint64_t{1}<<32));
+            assert(result.header_size<=bad.size() && result.header_size<=result.image_size);
+        } else assert(!why.empty());
+    }
     std::cout << "PE32 inspection tests passed (host pointers: " << sizeof(void*)*8 << " bits)\n";
 }

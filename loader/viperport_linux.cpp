@@ -217,13 +217,13 @@ int map_image(Image& im, const std::string& path) {
                                                                                                    : s[i].Misc.VirtualSize;
         if (s[i].PointerToRawData + (uint64_t)raw > im.file.size() || s[i].VirtualAddress + (uint64_t)raw > V10_IMAGE)
             return refuse("viperport: race.exe's section %.8s isn't what the file holds once mapped", (const char*)s[i].Name);
-        memcpy(im.base + s[i].VirtualAddress, &im.file[s[i].PointerToRawData], raw);
+        if (raw) memcpy(im.base + s[i].VirtualAddress, im.file.data() + s[i].PointerToRawData, raw);
     }
     // the view holds exactly the file's sections (what the audit compares against)
     for (int i = 0; i < n; i++) {
         const uint32_t raw = s[i].SizeOfRawData < s[i].Misc.VirtualSize || !s[i].Misc.VirtualSize ? s[i].SizeOfRawData
                                                                                                    : s[i].Misc.VirtualSize;
-        if (memcmp(im.base + s[i].VirtualAddress, &im.file[s[i].PointerToRawData], raw))
+        if (raw && memcmp(im.base + s[i].VirtualAddress, im.file.data() + s[i].PointerToRawData, raw))
             return refuse("viperport: race.exe's section %.8s isn't what the file holds once mapped", (const char*)s[i].Name);
     }
     vp_linux_note_region(BASE, V10_IMAGE, MEM_IMAGE, PAGE_EXECUTE_WRITECOPY);
