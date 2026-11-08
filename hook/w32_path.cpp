@@ -38,6 +38,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+// File offsets must retain the game-facing 64-bit range on both i386 and x86-64.
+static_assert(sizeof(off_t) >= sizeof(int64_t), "w32_path requires 64-bit file offsets");
 #endif
 
 namespace w32 {
