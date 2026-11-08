@@ -3,6 +3,7 @@
 // winsock is BSD sockets: ws2_32 on Windows, POSIX in the #else parts (R2b), with Windows' layouts and codes.
 #define _CRT_SECURE_NO_WARNINGS
 #include "w32_net.h"
+#include "w32_hostent.h"
 #include "w32_handle.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,31 +113,11 @@ uint32_t __stdcall w32_inet_addr(const char* s) {
 // ---- the parts of the POSIX branch that are plain C++ (here for every OS: the test compares them with Windows') -----
 // winsock's hostent, laid out in buf as winsock lays it out: the hostent (name, aliases, addrtype and length as shorts,
 // addresses), its two pointer lists, the addresses, the strings. The size it takes (0: it doesn't fit; *need says)
-namespace {
-struct WinHostent { uint32_t name, aliases; int16_t addrtype, length; uint32_t addr_list; };
-}
 uint32_t w32_hostent_lay(char* buf, uint32_t cap, const char* name, const uint32_t* addrs, uint32_t n, uint32_t* need) {
-    const uint32_t nlen = (uint32_t)strlen(name);
-    const uint32_t size = (uint32_t)sizeof(WinHostent) + 4 /* no aliases */ + (n + 1) * 4 + n * 4 + nlen + 1;
-    if (need) *need = size;
-    if (size > cap) return 0;
-    WinHostent* h = (WinHostent*)buf;
-    uint32_t* aliases = (uint32_t*)(buf + sizeof *h);
-    uint32_t* list = aliases + 1;
-    char* q = (char*)(list + n + 1);
-    for (uint32_t i = 0; i < n; i++, q += 4) {
-        memcpy(q, &addrs[i], 4);
-        list[i] = (uint32_t)(uintptr_t)q;
-    }
-    list[n] = 0;
-    aliases[0] = 0;
-    memcpy(q, name, nlen + 1);
-    h->name = (uint32_t)(uintptr_t)q;
-    h->aliases = (uint32_t)(uintptr_t)aliases;
-    h->addrtype = 2;
-    h->length = 4;
-    h->addr_list = (uint32_t)(uintptr_t)list;
-    return size;
+    // The legacy adapter is valid only when its buffer fits in guest address space.
+    const uintptr_t address = reinterpret_cast<uintptr_t>(buf);
+    if (address > UINT32_MAX) { if (need) *need = 0; return 0; }
+    return w32::hostent_lay_guest(buf, cap, static_cast<uint32_t>(address), name, addrs, n, need);
 }
 
 // WSAStartup's WSADATA for a 1.x or 2.x request, as Windows 10/11's winsock fills it in (lpVendorInfo untouched)

@@ -28,6 +28,7 @@
 #include <string.h>
 #include "port.h"
 #include "crt_types.h"
+#include "legacy_strncmp.h"
 
 namespace crt_str {   // (file-local helpers; one namespace per file so a harness can include all four)
 
@@ -81,18 +82,7 @@ PORT_FN(0x004ce0c0, "strchr", c_strchr, fp_strchr)
 // strncmp (0x4ce0e0): k = the bytes of s1 up to and including its NUL, at most n; compares k bytes (stopping at the
 // first difference) and returns the sign of the last pair compared, unsigned: -1, 0 or 1
 static int32_t __cdecl c_strncmp(const char* s1, const char* s2, uint32_t n) {
-    if (!n) return 0;
-    uint32_t k = 0;
-    while (k < n)
-        if (s1[k++] == 0) break;
-    uint32_t i = 0;
-    uint8_t a, b;
-    do {
-        a = (uint8_t)s2[i];
-        b = (uint8_t)s1[i];
-        i++;
-    } while (i < k && a == b);
-    return a > b ? -1 : a == b ? 0 : 1;
+    return legacy::strncmp(s1, s2, n);
 }
 static void fp_strncmp(Footprint& f, const char*, const char*, uint32_t) { f.pure = true; }
 PORT_FN(0x004ce0e0, "strncmp", c_strncmp, fp_strncmp)
