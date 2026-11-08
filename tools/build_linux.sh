@@ -12,6 +12,8 @@
 #                                   drivers load into the process and need the system's own newer libstdc++, so an older
 #                                   copy can't ship beside it), SDL2 found in ./lib beside the binary (RPATH $ORIGIN/lib)
 #   VP_JOBS=n                       compilers at a time (default: nproc)
+#   tools/build_linux.sh compile-db  emit out-linux/compile_commands.json without compiling
+#   VP_COMPILE_COMMANDS=1           emit the database as part of a normal or release build
 #
 # The flags are build_gcc.bat's (the x87 rules of hook/compiler.h: -m32 -O2 -march=i686 -mfpmath=387
 # -fexcess-precision=standard -fno-strict-aliasing -masm=intel -std=c++17 -fms-extensions), plus what makes Ubuntu's GCC
@@ -34,6 +36,8 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT=$(pwd)
 OUT=$ROOT/out-linux
 RELEASE=0
+DATABASE_ONLY=0
+if [ "${1:-}" = compile-db ]; then DATABASE_ONLY=1; fi
 if [ "${1:-}" = release ]; then RELEASE=1; OUT=$ROOT/out-linux-release; fi
 if [ "${1:-}" = clean ]; then rm -rf "$OUT" "$ROOT/out-linux-release"; exit 0; fi
 mkdir -p "$OUT/obj"
@@ -79,6 +83,48 @@ for p in $PATTERNS; do
     for f in $(ls $p 2>/dev/null | LC_ALL=C sort); do SOURCES+=("$f"); done
 done
 cd ..
+
+# Generate a tooling database from the same shell-expanded compiler arguments used below.
+# This is opt-in: ordinary game builds do not require Python or write a database.
+if [ "$DATABASE_ONLY" = 1 ] || [ "${VP_COMPILE_COMMANDS:-0}" = 1 ]; then
+    cd "$ROOT/hook" || exit 1
+    compiler_hook=( $CXX $CFLAGS )
+    cd "$ROOT" || exit 1
+    compiler_root=( $CXX $CFLAGS )
+    python3 - "$ROOT" "$OUT" "${#compiler_hook[@]}" "${#compiler_root[@]}" "${compiler_hook[@]}" "${compiler_root[@]}" "${SOURCES[@]}" <<'PYDB' || exit 1
+import json
+import os
+import sys
+import tempfile
+
+root, out = sys.argv[1:3]
+n_hook, n_root = int(sys.argv[3]), int(sys.argv[4])
+compiler_hook = sys.argv[5:5+n_hook]
+compiler_root = sys.argv[5+n_hook:5+n_hook+n_root]
+sources = sys.argv[5+n_hook+n_root:]
+commands = []
+for source in sources:
+    obj = os.path.join(out, "obj", source[:-4] + ".o")
+    commands.append({"directory": os.path.join(root, "hook"),
+                     "file": os.path.join(root, "hook", source),
+                     "arguments": compiler_hook + ["-MMD", "-MF", obj[:-2] + ".d", "-c", source, "-o", obj]})
+loader = os.path.join(root, "loader", "viperport_linux.cpp")
+commands.append({"directory": root, "file": loader,
+                 "arguments": compiler_root + ["-I" + os.path.join(root, "hook"), "-c", loader,
+                                            "-o", os.path.join(out, "viperport_linux.o")]})
+fd, temp = tempfile.mkstemp(prefix=".compile_commands-", suffix=".json", dir=out)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(commands, f, indent=2)
+        f.write("\n")
+    os.replace(temp, os.path.join(out, "compile_commands.json"))
+finally:
+    if os.path.exists(temp):
+        os.unlink(temp)
+PYDB
+    echo "build_linux: ${OUT#$ROOT/}/compile_commands.json written"
+    if [ "$DATABASE_ONLY" = 1 ]; then exit 0; fi
+fi
 
 # compile: a source is rebuilt when it, or any header it read (gcc -MMD), is newer than its object
 compile_one() {
