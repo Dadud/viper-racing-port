@@ -322,6 +322,13 @@ while Ubuntu package versions can change; this is not a bit-for-bit reproducible
 Executing the resulting binaries and the headless SEH test additionally requires a host kernel
 that supports 32-bit x86. The original game files are still needed to run the game or its replay corpus.
 
+### Portable 64-bit development tests
+
+`bash tools/test_portable.sh` builds and runs the asset-free address-view and content tests
+with the host compiler (64-bit on a 64-bit host). These tests do **not** build a 64-bit game;
+the current game still requires its 32-bit x86 runtime. See [ARCHITECTURE.md](ARCHITECTURE.md)
+for the migration constraints.
+
 ### Content inventory development
 
 The read-only native inventory is described in [ARCHITECTURE.md](ARCHITECTURE.md) and

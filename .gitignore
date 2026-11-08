@@ -15,3 +15,5 @@ hook/build-gcc/
 loader/build-gcc/
 out-linux/
 out-linux-release/
+
+out-portable/
