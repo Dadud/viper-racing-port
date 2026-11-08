@@ -308,6 +308,20 @@ again before playing normally.
   `type_names.py`, `names/`, `ApplyTypes.java`), generators (`gen_com_base.py`, `gen_texture_table.py`, `gen_port_tables.py`, `gen_leftovers.py`), `trace_diff.py`, `session_diff.py`, and `disasm.py` (disassembly with every constant's value and width).
 - `test/` — the offline fuzzer for pure rewrites (`fuzz.cpp`, `fuzz.h`, `build_fuzz.bat`) and a per-file compile check.
 
+### Containerized Linux build
+
+A container can provide the i386 build dependencies without installing them on the host:
+
+```sh
+docker build -f tools/Dockerfile.linux-build -t viper-linux-build .
+docker run --rm -v "$PWD:/src" -w /src -e VP_JOBS=4 viper-linux-build bash tools/build_linux.sh
+```
+
+This builds the non-release `out-linux/viperport` and link-test executable. The base image is pinned,
+while Ubuntu package versions can change; this is not a bit-for-bit reproducible release build.
+Executing the resulting binaries and the headless SEH test additionally requires a host kernel
+that supports 32-bit x86. The original game files are still needed to run the game or its replay corpus.
+
 ### Content inventory development
 
 The read-only native inventory is described in [ARCHITECTURE.md](ARCHITECTURE.md) and

@@ -1,0 +1,7 @@
+# Build environment for the non-release i386 Linux target; run the repository's
+# build script in a container with the checkout mounted at /src.
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+RUN dpkg --add-architecture i386 && apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      g++-multilib libsdl2-dev:i386 libgl-dev:i386 make ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
