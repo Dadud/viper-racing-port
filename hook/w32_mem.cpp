@@ -24,6 +24,7 @@
 #include <string.h>
 #include <mutex>
 #include <atomic>
+#include <memory>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -55,16 +56,71 @@ struct Heap {
     Block head;                                  // the list's sentinel
 };
 
-// live heaps: a handle is checked against these before it's touched (MemFree after MemEnd passes 0xffffffff)
+// On i386 the game sees the historical heap address. Native-width callers
+// instead need an opaque 32-bit token; never truncate a host heap pointer.
 const int MAX_HEAPS = 64;
+#if UINTPTR_MAX > UINT32_MAX
+struct HeapSlot { uint32_t token = 0; std::shared_ptr<Heap> heap; };
+HeapSlot g_heaps[MAX_HEAPS];
+std::mutex g_heap_table_mu;
+uint32_t g_next_heap_token = 1;
+using HeapLease = std::shared_ptr<Heap>;
+uint32_t register_heap(HeapLease hp) {
+    std::lock_guard<std::mutex> lock(g_heap_table_mu);
+    int free_slot = -1;
+    for (int i = 0; i < MAX_HEAPS; ++i) if (!g_heaps[i].heap) { free_slot = i; break; }
+    if (free_slot < 0) return 0;
+    // On wrap, do not reuse a token which is currently live.
+    uint32_t token;
+    for (;;) {
+        token = g_next_heap_token++;
+        if (!token || token == 0xffffffffu) continue;
+        bool in_use = false;
+        for (const auto& slot : g_heaps) if (slot.heap && slot.token == token) { in_use = true; break; }
+        if (!in_use) break;
+    }
+    g_heaps[free_slot] = {token, std::move(hp)};
+    return token;
+}
+HeapLease heap_of(uint32_t h) {
+    if (!h) return {};
+    std::lock_guard<std::mutex> lock(g_heap_table_mu);
+    for (const auto& slot : g_heaps) if (slot.token == h) return slot.heap;
+    return {};
+}
+HeapLease unregister_heap(uint32_t h) {
+    std::lock_guard<std::mutex> lock(g_heap_table_mu);
+    for (auto& slot : g_heaps) if (slot.heap && slot.token == h) {
+        HeapLease hp = std::move(slot.heap); slot.token = 0; return hp;
+    }
+    return {};
+}
+#else
 std::atomic<Heap*> g_heaps[MAX_HEAPS];
-
-Heap* heap_of(uint32_t h) {
+using HeapLease = Heap*;
+uint32_t register_heap(HeapLease hp) {
+    for (int i = 0; i < MAX_HEAPS; ++i) {
+        Heap* none = 0;
+        if (g_heaps[i].compare_exchange_strong(none, hp)) return (uint32_t)(uintptr_t)hp;
+    }
+    return 0;
+}
+HeapLease heap_of(uint32_t h) {
     if (!h) return 0;
-    for (int i = 0; i < MAX_HEAPS; i++)
+    for (int i = 0; i < MAX_HEAPS; ++i)
         if (g_heaps[i].load(std::memory_order_acquire) == (Heap*)(uintptr_t)h) return (Heap*)(uintptr_t)h;
     return 0;
 }
+HeapLease unregister_heap(uint32_t h) {
+    Heap* hp = heap_of(h);
+    if (!hp) return 0;
+    for (int i = 0; i < MAX_HEAPS; ++i) {
+        Heap* me = hp;
+        if (g_heaps[i].compare_exchange_strong(me, (Heap*)0)) break;
+    }
+    return hp;
+}
+#endif
 Block* block_of(const void* p) { return (Block*)((uint8_t*)p - sizeof(Block)); }
 // a block of this heap? (checked through the header, as Windows' heap checks its own; a foreign pointer's header
 // isn't this heap's)
@@ -96,31 +152,41 @@ bool too_big(Heap* hp, uint32_t n, uint32_t freed = 0) {
 
 uint32_t W32K_CALL w32_HeapCreate(uint32_t options, uint32_t initial_size, uint32_t maximum_size) {
     (void)options;
+#if UINTPTR_MAX > UINT32_MAX
+    HeapLease owner = std::make_shared<Heap>();
+    Heap* hp = owner.get();
+#else
     Heap* hp = new Heap;
+#endif
     hp->magic = MAGIC;
     hp->maximum = maximum_size && initial_size > maximum_size ? initial_size : maximum_size;   // (Windows: no error)
     hp->total = 0;
     hp->head.heap = hp;
     hp->head.prev = hp->head.next = &hp->head;
     hp->head.size = 0;
-    for (int i = 0; i < MAX_HEAPS; i++) {
-        Heap* none = 0;
-        if (g_heaps[i].compare_exchange_strong(none, hp)) return (uint32_t)(uintptr_t)hp;
-    }
+#if UINTPTR_MAX > UINT32_MAX
+    uint32_t handle = register_heap(std::move(owner));
+#else
+    uint32_t handle = register_heap(hp);
+#endif
+    if (handle) return handle;
+#if UINTPTR_MAX <= UINT32_MAX
     delete hp;
+#endif
     w32::set_last_error(w32::ERR_NOT_ENOUGH_MEMORY);
     return 0;
 }
 
 int32_t W32K_CALL w32_HeapDestroy(uint32_t h) {
-    Heap* hp = heap_of(h);
+    HeapLease lease = unregister_heap(h);
+#if UINTPTR_MAX > UINT32_MAX
+    Heap* hp = lease.get();
+#else
+    Heap* hp = lease;
+#endif
     if (!hp) {
         w32::set_last_error(w32::ERR_INVALID_HANDLE);
         return 0;
-    }
-    for (int i = 0; i < MAX_HEAPS; i++) {
-        Heap* me = hp;
-        if (g_heaps[i].compare_exchange_strong(me, (Heap*)0)) break;
     }
     {
         std::lock_guard<std::mutex> lk(hp->mu);
@@ -132,14 +198,24 @@ int32_t W32K_CALL w32_HeapDestroy(uint32_t h) {
         }
         hp->magic = 0;
     }
+#if UINTPTR_MAX <= UINT32_MAX
     delete hp;
+#endif
     return 1;
 }
 
 void* W32K_CALL w32_HeapAlloc(uint32_t h, uint32_t flags, uint32_t bytes) {
-    Heap* hp = heap_of(h);
+    HeapLease lease = heap_of(h);
+#if UINTPTR_MAX > UINT32_MAX
+    Heap* hp = lease.get();
+#else
+    Heap* hp = lease;
+#endif
     if (!hp) return 0;                           // (Windows: an access violation or nothing; no SetLastError)
     std::lock_guard<std::mutex> lk(hp->mu);
+#if UINTPTR_MAX > UINT32_MAX
+    if (hp->magic != MAGIC) { return 0; }
+#endif
     Block* b = too_big(hp, bytes) ? 0 : (Block*)malloc(sizeof(Block) + (bytes ? bytes : 1));
     if (!b) {
         w32::set_last_error(w32::ERR_NOT_ENOUGH_MEMORY);   // (documented as not set; Windows 10/11 sets it)
@@ -153,9 +229,17 @@ void* W32K_CALL w32_HeapAlloc(uint32_t h, uint32_t flags, uint32_t bytes) {
 }
 
 void* W32K_CALL w32_HeapReAlloc(uint32_t h, uint32_t flags, void* mem, uint32_t bytes) {
-    Heap* hp = heap_of(h);
+    HeapLease lease = heap_of(h);
+#if UINTPTR_MAX > UINT32_MAX
+    Heap* hp = lease.get();
+#else
+    Heap* hp = lease;
+#endif
     if (!hp) return 0;
     std::lock_guard<std::mutex> lk(hp->mu);
+#if UINTPTR_MAX > UINT32_MAX
+    if (hp->magic != MAGIC) { return 0; }
+#endif
     if (!owns(hp, mem)) {
         w32::set_last_error(w32::ERR_INVALID_PARAMETER);
         return 0;
@@ -195,12 +279,20 @@ void* W32K_CALL w32_HeapReAlloc(uint32_t h, uint32_t flags, void* mem, uint32_t 
 int32_t W32K_CALL w32_HeapFree(uint32_t h, uint32_t flags, void* mem) {
     (void)flags;
     if (!mem) return 1;
-    Heap* hp = heap_of(h);
+    HeapLease lease = heap_of(h);
+#if UINTPTR_MAX > UINT32_MAX
+    Heap* hp = lease.get();
+#else
+    Heap* hp = lease;
+#endif
     if (!hp) {
         w32::set_last_error(w32::ERR_INVALID_HANDLE);
         return 0;
     }
     std::lock_guard<std::mutex> lk(hp->mu);
+#if UINTPTR_MAX > UINT32_MAX
+    if (hp->magic != MAGIC) { w32::set_last_error(w32::ERR_INVALID_HANDLE); return 0; }
+#endif
     if (!owns(hp, mem)) {
         w32::set_last_error(w32::ERR_INVALID_PARAMETER);
         return 0;
@@ -214,9 +306,17 @@ int32_t W32K_CALL w32_HeapFree(uint32_t h, uint32_t flags, void* mem) {
 
 uint32_t W32K_CALL w32_HeapSize(uint32_t h, uint32_t flags, const void* mem) {
     (void)flags;
-    Heap* hp = heap_of(h);
+    HeapLease lease = heap_of(h);
+#if UINTPTR_MAX > UINT32_MAX
+    Heap* hp = lease.get();
+#else
+    Heap* hp = lease;
+#endif
     if (!hp) return 0xffffffffu;
     std::lock_guard<std::mutex> lk(hp->mu);
+#if UINTPTR_MAX > UINT32_MAX
+    if (hp->magic != MAGIC) { return 0xffffffffu; }
+#endif
     if (!owns(hp, mem)) {
         w32::set_last_error(w32::ERR_INVALID_PARAMETER);
         return 0xffffffffu;
@@ -227,9 +327,17 @@ uint32_t W32K_CALL w32_HeapSize(uint32_t h, uint32_t flags, const void* mem) {
 // a block's start (looked up in the list, so any pointer is safe to ask about), or the whole heap (NULL)
 int32_t W32K_CALL w32_HeapValidate(uint32_t h, uint32_t flags, const void* mem) {
     (void)flags;
-    Heap* hp = heap_of(h);
+    HeapLease lease = heap_of(h);
+#if UINTPTR_MAX > UINT32_MAX
+    Heap* hp = lease.get();
+#else
+    Heap* hp = lease;
+#endif
     if (!hp) return 0;
     std::lock_guard<std::mutex> lk(hp->mu);
+#if UINTPTR_MAX > UINT32_MAX
+    if (hp->magic != MAGIC) { return 0; }
+#endif
     for (Block* b = hp->head.next; b != &hp->head; b = b->next) {
         if (b->heap != hp || b->next->prev != b) return 0;
         if (mem && (const void*)(b + 1) == mem) return 1;
