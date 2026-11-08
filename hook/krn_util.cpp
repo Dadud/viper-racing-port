@@ -909,23 +909,8 @@ static void fp_from64_statics(Footprint& f) {
 // Base64ToMem (0x41b020): up to max bytes from a string whose length is a multiple of 4; 0 on a bad character
 // (after the bytes before it are written) or a bad length
 static uint8_t __cdecl Base64ToMem_rw(uint8_t* dst, int32_t max, const char* src) {
-    uint8_t ok = 1;
-    const int32_t len = (int32_t)strlen(src);
-    if (len & 3) return 0;
-    int32_t in = 0, out = 0;
-    if (len > 0) {
-        do {
-            if (out >= max) break;
-            const uint32_t t = base64_to_triple(src + in);
-            if (t & 0xff000000u) { ok = 0; break; }
-            for (int32_t sh = 16; out < max && sh >= 0; sh -= 8) {
-                out++;
-                dst[out - 1] = (uint8_t)(t >> sh);
-            }
-            in += 4;
-        } while (in < len);
-    }
-    return ok;
+    // Keep the guest callback, preserving original/shadow hook dispatch.
+    return legacy_base64::decode_buffer(dst, max, src, [](const char* s) { return base64_to_triple(s); });
 }
 static void fp_base64_to_mem(Footprint& f, uint8_t* dst, int32_t max, const char* src) {
     const int32_t len = (int32_t)strlen(src);
@@ -960,22 +945,8 @@ PORT_FN(0x0041b100, "from_64", from_64_rw, fp_from_64)
 // MemToBase64 (0x41b150): n bytes, 3 at a time (zeros past the end), 4 characters each while fewer than max have
 // been written, then a terminator -- so up to 4 characters and the terminator past max
 static uint8_t __cdecl MemToBase64_rw(char* dst, int32_t max, const uint8_t* src, int32_t n) {
-    int32_t in = 0, out = 0;
-    if (n > 0) {
-        do {
-            if (out >= max) break;
-            uint32_t t = 0;
-            for (int k = 3; k; k--) {
-                t <<= 8;
-                if (in < n) t |= src[in];
-                in++;
-            }
-            triple_to_base64(dst + out, t);
-            out += 4;
-        } while (in < n);
-    }
-    dst[out] = 0;
-    return 1;
+    // Retain the original callback and its legacy output-capacity semantics.
+    return legacy_base64::encode_buffer(dst, max, src, n, [](char* d, uint32_t t) { triple_to_base64(d, t); });
 }
 static void fp_mem_to_base64(Footprint& f, char* dst, int32_t max, const uint8_t*, int32_t n) {
     int32_t g = 0;

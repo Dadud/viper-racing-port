@@ -31,5 +31,34 @@ int main() {
     int calls=0;
     assert(legacy_base64::decode_quad("a!aa",[&](uint8_t x){ ++calls; return legacy_base64::ascii_value(x); })==0xff000000u);
     assert(calls==2);
-    std::cout << "legacy Base64 quad tests passed (host pointers: " << sizeof(void*)*8 << " bits)\n";
+    // Buffer-level pilot: preserve whole-quad writes and zero-filled tails.
+    const uint8_t bytes[] = {0x01,0x02,0x03,0xf0,0x80,0xff,0x55};
+    for (int n=0; n<=7; ++n) for (int max=-1; max<=12; ++max) {
+        char encoded[32]; std::memset(encoded,0x7f,sizeof encoded);
+        int encode_calls=0;
+        auto encode=[&](char* dst,uint32_t value) { ++encode_calls; legacy_base64::encode_quad_ascii(dst,value); };
+        assert(legacy_base64::encode_buffer(encoded,max,bytes,n,encode)==1);
+        int groups=0; while (groups*3<n && groups*4<max) ++groups;
+        assert(encode_calls==groups && encoded[groups*4]==0 && encoded[groups*4+1]==0x7f);
+        for (int cap=-1; cap<=11; ++cap) {
+            uint8_t decoded[32]; std::memset(decoded,0x7f,sizeof decoded);
+            int decode_calls=0;
+            auto decode=[&](const char* src) { ++decode_calls; return legacy_base64::decode_quad_ascii(src); };
+            assert(legacy_base64::decode_buffer(decoded,cap,encoded,decode)==1);
+            int written=cap>0 ? cap : 0; if (written>groups*3) written=groups*3;
+            assert(decode_calls==(written+2)/3);
+            for (int j=0;j<written;++j) assert(decoded[j]==(j<n ? bytes[j] : 0));
+            assert(decoded[written]==0x7f);
+        }
+    }
+    uint8_t partial[8] = {};
+    int decode_calls=0;
+    auto decode=[&](const char* src) { ++decode_calls; return legacy_base64::decode_quad_ascii(src); };
+    assert(legacy_base64::decode_buffer(partial,8,"aaaa!!!!",decode)==0 && decode_calls==2);
+    assert(partial[0]==0 && partial[1]==0 && partial[2]==0);
+    decode_calls=0;
+    assert(legacy_base64::decode_buffer(partial,3,"aaaa!!!!",decode)==1 && decode_calls==1);
+    decode_calls=0;
+    assert(legacy_base64::decode_buffer(partial,8,"abc",decode)==0 && decode_calls==0);
+    std::cout << "legacy Base64 quad and buffer tests passed (host pointers: " << sizeof(void*)*8 << " bits)\n";
 }
