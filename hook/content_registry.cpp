@@ -36,8 +36,11 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     if (!f.read(reinterpret_cast<char*>(header), 16) || std::string(reinterpret_cast<char*>(header), 4) != "0TSR") {
         e.issues.push_back("Invalid or truncated 0TSR header"); return e;
     }
-    uint32_t count = le32(header + 4);
+    uint32_t count = le32(header + 4), core_count = le32(header + 8), boundary = le32(header + 12);
     if (count > (size - 16) / 36 || count > 1000000) { e.issues.push_back("Invalid directory size"); return e; }
+    if (core_count > count || boundary > size || boundary < 16 + uint64_t(count)*36) {
+        e.issues.push_back("Invalid core archive layout"); return e;
+    }
     struct Member { std::string name, tag; uint32_t version, size; };
     std::vector<Member> dir; dir.reserve(count);
     std::set<std::string> names;
@@ -51,6 +54,7 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
         dir.push_back({name, std::string(reinterpret_cast<char*>(d + 16), 4), le32(d + 20), le32(d + 24)});
     }
     uint64_t cursor = 16 + uint64_t(count) * 36;
+    uint64_t core_end = core_count == 0 ? cursor : 0;
     for (size_t i = 0; i < dir.size(); ++i) {
         const auto& m = dir[i];
         unsigned char prefix[8];
@@ -71,6 +75,10 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
         e.members.push_back(m.name);
         e.resources.push_back({m.name, m.tag, m.version, m.size});
         cursor += 8 + uint64_t(m.size);
+        if (i + 1 == core_count) core_end = cursor;
+    }
+    if (!core_end || core_end != boundary) {
+        e.issues.push_back("Core boundary does not match member layout"); return e;
     }
     e.valid = true;
     // A directory entry without a payload (lockd padding) is not a resource.

@@ -26,7 +26,7 @@ int main() {
     auto dir = fs::temp_directory_path() / ("vp-content-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(dir / "nested");
     std::vector<unsigned char> b(16+36+8+3, 0);
-    b[0]='0'; b[1]='T'; b[2]='S'; b[3]='R'; word(b,4,1);
+    b[0]='0'; b[1]='T'; b[2]='S'; b[3]='R'; word(b,4,1); word(b,8,1); word(b,12,b.size());
     const char* n="body.mod"; for (int i=0; n[i]; ++i) b[16+i]=n[i]; word(b,16+24,3);
     b[56]='!'; b[57]='I'; b[58]='G'; b[59]='M'; b[60]=1; b[61]=2; b[62]=3;
     write(dir / "alpha.car", b); write(dir / "nested" / "copy.CAR", b);
@@ -66,7 +66,7 @@ int main() {
     assert(invalid.entries.size()==1 && !invalid.entries[0].valid);
     // The documented lockd directory padding has no corresponding payload.
     std::vector<unsigned char> decoy(16+36,0);
-    decoy[0]='0'; decoy[1]='T'; decoy[2]='S'; decoy[3]='R'; word(decoy,4,1);
+    decoy[0]='0'; decoy[1]='T'; decoy[2]='S'; decoy[3]='R'; word(decoy,4,1); word(decoy,12,decoy.size());
     const std::string decoy_name="lockd1.tab";
     std::copy(decoy_name.begin(),decoy_name.end(),decoy.begin()+16);
     decoy[32]='B'; decoy[33]='A'; decoy[34]='T'; decoy[35]='S'; word(decoy,40,12);
@@ -79,7 +79,7 @@ int main() {
     fs::create_directories(dir);
     // Two complete resources for the selected car name, matched case-insensitively.
     std::vector<unsigned char> car(16+72+8+0x228+8+1,0);
-    car[0]='0'; car[1]='T'; car[2]='S'; car[3]='R'; word(car,4,2);
+    car[0]='0'; car[1]='T'; car[2]='S'; car[3]='R'; word(car,4,2); word(car,8,2); word(car,12,car.size());
     const std::string cf="TEST.CF", model="test0.mod";
     std::copy(cf.begin(),cf.end(),car.begin()+16);
     car[32]='F'; car[33]='R'; car[34]='A'; car[35]='C'; word(car,36,6); word(car,40,0x228);
@@ -108,6 +108,14 @@ int main() {
     primary.resources.clear();
     content::Entry invalid_shared{}; invalid_shared.path="broken.res";
     assert(content::resolve_resource("test.cf",primary,{invalid_shared,shared}).status==content::ResolutionStatus::indeterminate);
+    auto malformed=car; word(malformed,12,16+72);
+    write(dir / "bad-boundary.car",malformed);
+    assert(!content::search(content::scan(dir), "bad-boundary")[0]->valid);
+    word(malformed,8,3); write(dir / "bad-boundary.car",malformed);
+    assert(!content::search(content::scan(dir), "bad-boundary")[0]->valid);
+    word(malformed,8,2); word(malformed,12,0xffffffffu); write(dir / "bad-boundary.car",malformed);
+    assert(!content::search(content::scan(dir), "bad-boundary")[0]->valid);
+    fs::remove(dir / "bad-boundary.car");
     word(car,36,5); write(dir / "test.car",car);
     assert(!content::scan(dir).entries[0].issues.empty());
     fs::remove_all(dir);
