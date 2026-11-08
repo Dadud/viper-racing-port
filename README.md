@@ -325,7 +325,7 @@ that supports 32-bit x86. The original game files are still needed to run the ga
 ### Portable 64-bit development tests
 
 `bash tools/test_portable.sh` builds and runs the asset-free address-view, PE32 inspection, and content tests
-with the host compiler (64-bit on a 64-bit host). The script also exercises the existing path and time layers, large-file operations, network CRC, the game's custom Base64 conversion, CRT comparison, guest host-entry serialization, PE32 image mapping, and the UI string-list core. To run an i386 build through a compatible user-mode emulator, set `CXXFLAGS=-m32` and `VP_TEST_RUNNER=qemu-i386`; this does not replace native i386 exception or game tests. These tests do **not** build a 64-bit game;
+with the host compiler (64-bit on a 64-bit host). The script also exercises the existing path and time layers, large-file operations, network CRC, the game's custom Base64 conversion, CRT comparison, guest host-entry serialization, PE32 image mapping, and the native-owned UI string-list component. To run an i386 build through a compatible user-mode emulator, set `CXXFLAGS=-m32` and `VP_TEST_RUNNER=qemu-i386`; this does not replace native i386 exception or game tests. These tests do **not** build a 64-bit game;
 the current game still requires its 32-bit x86 runtime. See [ARCHITECTURE.md](ARCHITECTURE.md)
 for the migration constraints.
 

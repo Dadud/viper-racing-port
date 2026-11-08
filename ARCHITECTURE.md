@@ -20,7 +20,7 @@ The CRT `strncmp` rewrite shares a host-width-independent implementation with na
 
 Additional native-width pilots expose keyboard scan state, reliable packet sequence arithmetic, and CRT memory movement through typed functions while preserving their i386 adapters. The heap stand-in uses opaque 32-bit handles for native 64-bit callers rather than truncating host pointers; its i386 address handles remain. Heap allocations still return host pointers and do not yet provide a guest-memory bridge.
 
-The UI string-list add, get, and delete operations now live in a host-width-independent core and are exercised by `test/ui_string_list_core_test.cpp` on the host architecture. The existing UI rewrite passes fields from its original `UIStringList` ABI object into that core; allocation, destruction, object layout and all other UI calls remain legacy-bound. This is a tested operation seam, not native UI startup or rendering.
+The UI string-list add, get, and delete operations now live in a host-width-independent core. `ui_core::OwnedStringList` owns native buffers with stable entry addresses, and `test/ui_string_list_core_test.cpp` exercises that host implementation. The existing UI rewrite passes fields from its original `UIStringList` ABI object into the same operations; it still uses the original allocator and ABI layout. This is a tested native data component, not native UI startup or rendering.
 
 `test/x87_parity_corpus.cpp` outputs deterministic per-case float bits and x87/SSE status across precision and rounding modes. It is a diagnostic, not a game-physics test. Compare it with a native i386 run; QEMU alone is not an oracle.
 
