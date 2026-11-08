@@ -24,8 +24,12 @@
 
 #if defined(_WIN32)
 #define W32K_CALL __stdcall
-#else
+#elif defined(__i386__)
 #define W32K_CALL __attribute__((stdcall))
+#else
+// Host-native tests and future native callers use the host ABI; this does not
+// make a 32-bit guest call compatible with a 64-bit function pointer.
+#define W32K_CALL
 #endif
 
 // ---- the structures the game passes (32-bit Windows layouts) -------------------------------------------------------

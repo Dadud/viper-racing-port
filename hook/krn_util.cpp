@@ -51,6 +51,7 @@ extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void
 #endif
 #include "port.h"
 #include "x87.h"
+#include "legacy_base64.h"
 
 #define D(x) ((double)(x))                          // a register value (x87.h)
 typedef int Edx;                                    // the unused edx of a __thiscall received as __fastcall
@@ -938,14 +939,8 @@ PORT_FN(0x0041b020, "Base64ToMem", Base64ToMem_rw, fp_base64_to_mem)
 
 // base64_to_triple (0x41b0c0): four characters to 24 bits; 0xff000000 on a bad one
 static uint32_t __cdecl base64_to_triple_rw(const char* s) {
-    uint32_t v = 0;
-    for (int i = 0; i < 4; i++) {
-        v <<= 6;
-        const uint32_t c = from_64((uint32_t)(uint8_t)s[i]);
-        if ((uint8_t)c & 0xc0) return 0xff000000u;
-        v |= (uint8_t)c;
-    }
-    return v;
+    // Keep the game's fixed-address callback so hook/shadow dispatch is unchanged.
+    return legacy_base64::decode_quad(s, [](uint8_t c) { return from_64(c); });
 }
 static void fp_base64_to_triple(Footprint& f, const char*) { fp_from64_statics(f); }
 PORT_FN(0x0041b0c0, "base64_to_triple", base64_to_triple_rw, fp_base64_to_triple)
@@ -997,10 +992,8 @@ PORT_FN(0x0041b150, "MemToBase64", MemToBase64_rw, fp_mem_to_base64)
 
 // triple_to_base64 (0x41b1b0): 24 bits to four characters, last first
 static void __cdecl triple_to_base64_rw(char* d, uint32_t t) {
-    for (int32_t i = 3; i >= 0; i--) {
-        d[i] = to_64(t & 0x3f);
-        t >>= 6;
-    }
+    // The callback remains the game's to_64 address, including its patching mode.
+    legacy_base64::encode_quad(d, t, [](uint8_t c) { return to_64(c); });
 }
 static void fp_triple_to_base64(Footprint& f, char* d, uint32_t) {
     f.add(d, 4, "characters");

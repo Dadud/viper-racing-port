@@ -33,6 +33,7 @@
 #include "port.h"
 #include "net_types.h"
 #include "net_wsock.h"
+#include "net_crc16.h"
 
 // a harness's marker for "a fix changed what happens here" (nothing in the DLL)
 #ifndef VP_FIX_HIT
@@ -48,14 +49,9 @@ using namespace nt;
 // =========================================================================================================================
 // CRC16(p, n): crc = table[(byte ^ crc >> 8) & 0xff] ^ crc << 8 over n bytes (none if n <= 0), from 0
 static uint16_t __cdecl CRC16_c(const void* p, int32_t n) {
-    enum : uint32_t { TABLE = 0x004df358 };
-    const volatile uint8_t* s = (const volatile uint8_t*)p;
-    uint32_t crc = 0;
-    for (int32_t left = n; left > 0; left--) {
-        const uint32_t b = (uint32_t)(int32_t)(int8_t)*s++;
-        crc = (uint32_t)NT_G16(TABLE + (((b ^ (crc >> 8 & 0xff)) & 0xff) * 2)) ^ (crc << 8 & 0xffff);
-    }
-    return (uint16_t)crc;
+    // This adapter supplies the original guest table; the algorithm itself is
+    // independent of the guest address and can run on a native-width host.
+    return net::crc16(p, n, (const volatile uint16_t*)(uintptr_t)0x004df358);
 }
 static void fp_pure_cdecl_crc(Footprint& f, const void*, int32_t) { f.pure = true; }
 PORT_FN(0x004a3d70, "CRC16", CRC16_c, fp_pure_cdecl_crc)
