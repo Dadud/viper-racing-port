@@ -52,6 +52,7 @@ extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void
 #include "port.h"
 #include "x87.h"
 #include "legacy_base64.h"
+#include "legacy_input.h"
 
 #define D(x) ((double)(x))                          // a register value (x87.h)
 typedef int Edx;                                    // the unused edx of a __thiscall received as __fastcall
@@ -367,16 +368,13 @@ static void fp_scan_end(Footprint& f) { f.replay_only = "it releases the DirectI
 PORT_FN(0x00412ff0, "ScanEnd", ScanEnd_rw, fp_scan_end)
 
 // ScanDown (0x4130e0): bit 7 of the key's state
-static uint8_t __cdecl ScanDown_rw(uint8_t k) { return (uint8_t)((G8(A_SCAN + k) & 0x80) >> 7); }
+static uint8_t __cdecl ScanDown_rw(uint8_t k) { return legacy_input::down((const volatile uint8_t*)(uintptr_t)A_SCAN, k); }
 static void fp_scan_down(Footprint&, uint8_t) {}
 PORT_FN(0x004130e0, "ScanDown", ScanDown_rw, fp_scan_down)
 
 // ScanHit (0x413100): bit 0 of the key's state, cleared as it's read
 static uint8_t __cdecl ScanHit_rw(uint8_t k) {
-    uint8_t v = G8(A_SCAN + k);
-    if (!(v & 1)) return 0;
-    G8(A_SCAN + k) = (uint8_t)(v & 0xfe);
-    return 1;
+    return legacy_input::hit((volatile uint8_t*)(uintptr_t)A_SCAN, k);
 }
 static void fp_scan_hit(Footprint& f, uint8_t k) { FP_ADD(f, A_SCAN + k, 1, "scan state"); }
 PORT_FN(0x00413100, "ScanHit", ScanHit_rw, fp_scan_hit)

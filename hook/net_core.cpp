@@ -44,6 +44,7 @@
 #include "port.h"
 #include "x87.h"
 #include "net_core.h"
+#include "net_sequence.h"
 #include "net_wsock.h"
 
 // a harness's marker for "a fix changed what happens here" (nothing in the DLL)
@@ -619,7 +620,7 @@ static void __cdecl return_slot_c(int s) {
 static void fp_return_slot(Footprint& f, int s) { f.add((void*)(uintptr_t)(G_HOST_SLOTS + (uint32_t)s), 1, "a HostEntry slot"); }
 PORT_FN(0x004b00b0, "return_slot", return_slot_c, fp_return_slot)
 
-static uint8_t __fastcall HE_normalize_id(HostEntry* self, Edx, uint8_t id) { return (uint8_t)(id - self->recv_id); }
+static uint8_t __fastcall HE_normalize_id(HostEntry* self, Edx, uint8_t id) { return net_sequence::normalize(id, self->recv_id); }
 static void fp_he_normalize(Footprint& f, HostEntry*, Edx, uint8_t) { f.pure = true; }
 PORT_FN(0x004b00c0, "HostEntry::normalize_id", HE_normalize_id, fp_he_normalize)
 
@@ -670,9 +671,9 @@ static void fp_he_init_rpp(Footprint& f, HostEntry*, Edx, RPP* r, const void*, i
 PORT_FN(0x004b01a0, "HostEntry::init_rpp", HE_init_rpp, fp_he_init_rpp)
 
 static uint8_t __fastcall HE_already_recd_pkt(HostEntry* self, Edx, uint8_t id) {
-    if ((uint8_t)(id - self->recv_id + 0x10) <= 0x10) return 1;
-    if (fn<InList_t>(F_HE_id_is_in_list)(self, 0, self->held, id)) return 1;
-    return 0;
+    return net_sequence::already_received(id, self->recv_id, [self](uint8_t candidate) {
+        return fn<InList_t>(F_HE_id_is_in_list)(self, 0, self->held, candidate);
+    });
 }
 static void fp_he_already(Footprint&, HostEntry*, Edx, uint8_t) {}          // (reads the held list: not fuzzable)
 PORT_FN(0x004b0200, "HostEntry::already_recd_pkt", HE_already_recd_pkt, fp_he_already)

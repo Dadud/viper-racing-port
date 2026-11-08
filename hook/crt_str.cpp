@@ -29,6 +29,7 @@
 #include "port.h"
 #include "crt_types.h"
 #include "legacy_strncmp.h"
+#include "legacy_memmove.h"
 
 namespace crt_str {   // (file-local helpers; one namespace per file so a harness can include all four)
 
@@ -119,15 +120,7 @@ PORT_FN(0x004cf3a0, "strncpy", c_strncpy, fp_strncpy)
 
 // memmove (0x4cf400): forwards unless dst lies inside (src, src + n) (the comparison in 32-bit addresses)
 static void* __cdecl c_memmove(void* dst, const void* src, uint32_t n) {
-    uint8_t* d = (uint8_t*)dst;                     // in the original's direction (the result is memmove's either way)
-    const uint8_t* s = (const uint8_t*)src;
-    if ((uint32_t)(uintptr_t)dst <= (uint32_t)(uintptr_t)src ||
-        (uint32_t)(uintptr_t)dst >= (uint32_t)(uintptr_t)src + n) {
-        for (uint32_t i = 0; i < n; i++) d[i] = s[i];
-    } else {
-        for (uint32_t i = n; i--;) d[i] = s[i];
-    }
-    return dst;
+    return legacy::memmove_guest(dst, src, n, (uint32_t)(uintptr_t)dst, (uint32_t)(uintptr_t)src);
 }
 static void fp_memmove(Footprint& f, void* dst, const void*, uint32_t n) { f.add(dst, n, "memmove dst"); }
 PORT_FN(0x004cf400, "memmove", c_memmove, fp_memmove)
