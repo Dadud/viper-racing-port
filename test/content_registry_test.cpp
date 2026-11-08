@@ -43,15 +43,36 @@ int main() {
     const char* n="body.mod"; for (int i=0; n[i]; ++i) b[16+i]=n[i]; word(b,16+24,3);
     b[56]='!'; b[57]='I'; b[58]='G'; b[59]='M'; b[60]=1; b[61]=2; b[62]=3;
     write(dir / "alpha.car", b); write(dir / "nested" / "copy.CAR", b);
+    { std::ofstream f(dir / "alpha.car.json");
+      f << "{\"schema_version\":1,\"author\":\"Ada \\u2603\",\"version\":\"2.1\","
+           "\"description\":\"A \\\"fast\\\" car\",\"gallery\":{\"tags\":[\"sport\",true]}}"; }
+    { std::ofstream f(dir / "nested" / "copy.CAR.json"); f << "{\"schema_version\":1,\"author\":4}"; }
     b.resize(60); write(dir / "broken.trk", b);
     auto r=content::scan(dir);
     assert(r.entries.size()==3 && r.entries[0].valid && !r.entries[1].valid && r.entries[2].valid);
+    assert(r.entries[0].metadata_present && r.entries[0].metadata_valid);
+    assert(r.entries[0].author == std::string("Ada \xe2\x98\x83") && r.entries[0].version == "2.1");
+    assert(r.entries[0].description == "A \"fast\" car");
+    assert(r.entries[2].valid && r.entries[2].metadata_present && !r.entries[2].metadata_valid && !r.entries[2].metadata_issue.empty());
+    assert(!r.entries[1].metadata_present && r.entries[1].metadata_valid);
     assert(r.entries[0].members.size()==1 && r.entries[0].members[0]=="body.mod");
     assert(r.entries[0].duplicate && r.entries[2].duplicate && r.entries[0].id == r.entries[2].id);
     auto stable_id = r.entries[0].id;
     fs::rename(dir / "alpha.car", dir / "moved.car");
+    fs::rename(dir / "alpha.car.json", dir / "moved.car.json");
     auto moved = content::scan(dir);
     assert(content::search(moved,"moved")[0]->id == stable_id);
+    assert(content::search(moved,"moved")[0]->author == r.entries[0].author);
+    { std::ofstream f(dir / "moved.car.json"); f << "{\"schema_version\":1,\"author\":\"A\",\"author\":\"B\"}"; }
+    auto duplicate_registry = content::scan(dir);
+    auto duplicate_metadata = content::search(duplicate_registry, "moved")[0];
+    assert(duplicate_metadata->valid && !duplicate_metadata->metadata_valid);
+    assert(duplicate_metadata->metadata_issue.find("duplicate author") != std::string::npos);
+    { std::ofstream f(dir / "moved.car.json", std::ios::binary); f << std::string(64 * 1024 + 1, ' '); }
+    auto oversized_registry = content::scan(dir);
+    auto oversized_metadata = content::search(oversized_registry, "moved")[0];
+    assert(oversized_metadata->valid && !oversized_metadata->metadata_valid);
+    assert(oversized_metadata->metadata_issue == "Metadata manifest has invalid size");
     assert(content::search(r,"ALP").size()==1);
     assert(!r.entries[1].issues.empty());
     content::Preferences prefs, loaded;

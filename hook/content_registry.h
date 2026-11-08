@@ -24,6 +24,12 @@ struct Entry {
     std::string name;
     std::string id; // kind and SHA-256 of the exact file; stable across moves
     std::string sha256;
+    std::string author;
+    std::string version;
+    std::string description;
+    bool metadata_present = false;
+    bool metadata_valid = true;
+    std::string metadata_issue;
     bool duplicate = false; // byte-for-byte match of another entry in this scan
     std::vector<std::string> members;
     std::vector<Resource> resources;

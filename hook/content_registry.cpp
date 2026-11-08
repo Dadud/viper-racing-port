@@ -1,4 +1,5 @@
 #include "content_registry.h"
+#include "content_manifest.h"
 #include "content_sha256.h"
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +20,13 @@ uint32_t le32(const unsigned char* p) {
 }
 Entry inspect(const std::filesystem::path& path, Kind kind) {
     Entry e{}; e.path = path; e.kind = kind; e.name = path.stem().string();
+    const auto manifest = load_manifest(path);
+    e.metadata_present = manifest.present;
+    e.metadata_valid = manifest.valid;
+    e.metadata_issue = manifest.issue;
+    e.author = manifest.metadata.author;
+    e.version = manifest.metadata.version;
+    e.description = manifest.metadata.description;
     std::ifstream f(path, std::ios::binary);
     if (!f) { e.issues.push_back("Cannot open file"); return e; }
     // Stream the fingerprint: never allocate based on an untrusted file's size.
