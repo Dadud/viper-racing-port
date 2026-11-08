@@ -21,6 +21,7 @@ REGISTRATION = re.compile(r'\b(PORT_FN(?:_BUILDS|_GL|_AUDIO)?)\s*\(')
 DISPATCH = re.compile(r'\b(ccall|tcall|vcall)\s*<')
 ADDRESS = re.compile(r'\b0[xX][0-9a-fA-F]+(?:[uUlL]+)?\b')
 LITERAL = re.compile(r'0[xX][0-9a-fA-F]+(?:[uUlL]+)?\Z')
+FIXED_CONSTANT = re.compile(r'\b(F_[A-Za-z_]\w*)\s*=\s*(0[xX][0-9a-fA-F]+(?:[uUlL]+)?)\b')
 
 
 def masked(source: str, *, strings: bool) -> str:
@@ -103,7 +104,7 @@ def parse_integer(text: str) -> int | None:
     return int(re.sub(r'[uUlL]+$', '', s), 16) if LITERAL.fullmatch(s) else None
 
 
-def dispatch_sites(path: str, source: str) -> list[dict]:
+def dispatch_sites(path: str, source: str, constants: dict[str, set[int]]) -> list[dict]:
     """Record wrapper call operands without claiming they are resolved call edges."""
     code = masked(source, strings=True)
     lines = [i for i, ch in enumerate(source) if ch == "\n"]
@@ -134,6 +135,12 @@ def dispatch_sites(path: str, source: str) -> list[dict]:
             if literal:
                 value = parse_integer(target)
                 site['address'] = f'0x{value:08x}' if value is not None else None
+            elif target in constants:
+                values = constants[target]
+                if len(values) == 1:
+                    site['resolved_address'] = f'0x{next(iter(values)):08x}'
+                else:
+                    site['resolution'] = 'ambiguous_constant'
         result.append(site)
     return result
 
@@ -181,12 +188,18 @@ def scan_source(path: str, source: str) -> tuple[list[dict], list[dict], list[di
 def inventory(directory: Path) -> dict:
     registrations, unresolved, addresses, dispatches = [], [], [], []
     files = sorted(directory.glob('*.cpp'))
+    constants: dict[str, set[int]] = {}
+    for path in sorted(directory.glob('*.h')) + files:
+        text = path.read_text(encoding='utf-8', errors='replace')
+        for name, literal in FIXED_CONSTANT.findall(masked(text, strings=True)):
+            value = parse_integer(literal)
+            if value is not None: constants.setdefault(name, set()).add(value)
     for path in files:
         # Replacement preserves the ability to inventory source files with legacy bytes.
         text = path.read_text(encoding='utf-8', errors='replace')
         regs, warnings, refs = scan_source(path.name, text)
         registrations.extend(regs); unresolved.extend(warnings); addresses.extend(refs)
-        dispatches.extend(dispatch_sites(path.name, text))
+        dispatches.extend(dispatch_sites(path.name, text, constants))
     targets = {r['address'] for r in registrations if r['address'] is not None}
     for r in addresses:
         r['matches_registration'] = r['address'] in targets
@@ -201,6 +214,8 @@ def inventory(directory: Path) -> dict:
                     'unresolved_registrations': len(unresolved), 'guest_range_literal_occurrences': len(addresses),
                     'dispatch_sites': len(dispatches),
                     'dispatch_sites_by_wrapper': dict(sorted(Counter(r['wrapper'] for r in dispatches).items())),
+                    'dispatch_sites_with_resolved_fixed_constant': sum('resolved_address' in r for r in dispatches),
+                    'ambiguous_dispatch_constants': sum(r.get('resolution') == 'ambiguous_constant' for r in dispatches),
                     'address_categories': dict(sorted(Counter(r['category'] for r in addresses).items())),
                     'registration_count_by_file': dict(sorted(by_file.items()))},
         'registrations': registrations, 'unresolved': unresolved, 'address_occurrences': addresses,

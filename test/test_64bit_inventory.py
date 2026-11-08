@@ -47,7 +47,7 @@ const auto q = 0x1234;
         source += '''tcall<int>(F_Method, self, value);\n'''
         source += '''vcall<void>(object, slot, argument);\n'''
         source += '''ccall<int>((FunctionType)0x00401234, value);\n'''
-        sites = mod.dispatch_sites('calls.cpp', source)
+        sites = mod.dispatch_sites('calls.cpp', source, {})
         self.assertEqual([s['wrapper'] for s in sites], ['ccall', 'tcall', 'vcall', 'ccall'])
         self.assertEqual(sites[0]['target_kind'], 'symbol')
         self.assertEqual(sites[1]['target_expression'], 'F_Method')
@@ -60,17 +60,19 @@ const auto q = 0x1234;
             root = Path(tmp)
             cpp = root / 'one.cpp'
             original = 'PORT_FN(0x00401111, "one", impl, fp)\nint x = 0x00401111;\n'
-            cpp.write_text(original)
-            (root / 'ignored.h').write_text('PORT_FN(0x00401112, "two", f, fp)\n')
+            cpp.write_text(original + 'ccall<void>(F_Test, value);\n')
+            (root / 'ignored.h').write_text('enum { F_Test = 0x00402222 };\nPORT_FN(0x00401112, "two", f, fp)\n')
             command = [sys.executable, str(ROOT / 'tools' / '64bit_inventory.py'), '--source-dir', str(root)]
             first = subprocess.check_output(command, text=True)
             self.assertEqual(first, subprocess.check_output(command, text=True))
             doc = json.loads(first)
             self.assertEqual(doc['summary']['source_files'], 1)
             self.assertEqual(doc['summary']['registrations'], 1)
+            self.assertEqual(doc['summary']['dispatch_sites_with_resolved_fixed_constant'], 1)
+            self.assertEqual(doc['dispatch_sites'][0]['resolved_address'], '0x00402222')
             self.assertTrue(all(x['matches_registration'] for x in doc['address_occurrences']))
             self.assertEqual([x['category'] for x in doc['address_occurrences']], ['registration_argument', 'matching_registered_literal'])
-            self.assertEqual(cpp.read_text(), original)
+            self.assertEqual(cpp.read_text(), original + 'ccall<void>(F_Test, value);\n')
             self.assertIn('not resolved', doc['method'])
 
 
