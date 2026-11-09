@@ -26,7 +26,8 @@ should retain the original visual style. Faithful rendering and simulation behav
 - A managed content catalog indexes installed `.car`, `.trk`, and `.tra` packages by SHA-256 identity, with metadata,
   dependency checks, favorites, and a managed library installer.
 - Quick Race car and track choices are integrated into the game's existing setup menu. The adapter resolves a selected
-  package by exact archive identity and fails closed if the archive changes or disappears.
+  package by exact archive identity and fails closed if the archive changes or disappears. Installed packages that share a
+  resource stem with stock or another package remain selectable; colliding in-menu labels get a short hash suffix.
 - Community 1.2.4–1.2.6 executable address maps and patch-specific behavior are tracked in
   [the patch parity ledger](docs/COMMUNITY_PATCH_PARITY.md).
 

@@ -73,6 +73,11 @@ static bool g_quick_race_active;
 static bool g_quick_race_car_failed;
 static bool g_quick_race_track_failed;
 
+static std::string quick_folded_name(std::string value) {
+    for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return value;
+}
+
 static const content::BrowseItem* quick_custom_car(int32_t index) {
     const int32_t at = index - g_quick_race_stock_cars;
     return g_quick_race_active && g_quick_race_cars && at >= 0 && (size_t)at < g_quick_race_cars->size()
@@ -83,6 +88,36 @@ static const content::BrowseItem* quick_custom_track(int32_t index) {
     const int32_t at = index - first;
     return g_quick_race_active && g_quick_race_tracks && at >= 0 && (size_t)at < g_quick_race_tracks->size()
         ? &(*g_quick_race_tracks)[(size_t)at] : nullptr;
+}
+static bool quick_content_name_collides(const content::BrowseItem* row, content::Kind kind) {
+    if (!row) return false;
+    const std::string wanted = row->archive_path.stem().string();
+    const int32_t stock_count = kind == content::Kind::car ? g_quick_race_stock_cars : g_quick_race_normal_tracks;
+    for (int32_t i = 0; i < stock_count; ++i) {
+        const char* name = kind == content::Kind::car
+            ? ccall<const char*>(mob::F_GetCarFileName, i)
+            : ccall<const char*>(F_GetTrackName, i);
+        if (name && quick_folded_name(name) == quick_folded_name(wanted)) return true;
+    }
+    const auto* rows = kind == content::Kind::car ? g_quick_race_cars : g_quick_race_tracks;
+    if (!rows) return false;
+    for (const auto& other : *rows) {
+        if (&other == row) continue;
+        if (quick_folded_name(other.archive_path.stem().string()) == quick_folded_name(wanted)) return true;
+    }
+    return false;
+}
+static const char* quick_content_friendly_name(const content::BrowseItem* row, content::Kind kind) {
+    if (!row) return "";
+    static std::string label;
+    label = row->name.empty() ? row->archive_path.stem().string() : row->name;
+    if (quick_content_name_collides(row, kind)) {
+        const std::string& id = row->id;
+        const std::string suffix = id.size() >= 8 ? id.substr(id.size() - 8) : id;
+        if (label.size() > 22) label.resize(22);
+        label += " [" + suffix + "]";
+    }
+    return label.c_str();
 }
 static int32_t quick_track_count() {
     return g_quick_race_active ? g_quick_race_stock_tracks + (g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0)
@@ -371,7 +406,8 @@ PORT_FN(0x0049b210, "TrackViewer::GetTrackName", TrackViewer_GetTrackName_c, fp_
 static const char* __fastcall TrackViewer_GetTrackFriendlyName_c(TrackViewer* self, Edx) {
     const int32_t t = self->track;
     if (t == -1) return CP(0x004fa330);
-    if (const content::BrowseItem* row = quick_custom_track(t)) return row->name.c_str();
+    if (const content::BrowseItem* row = quick_custom_track(t))
+        return quick_content_friendly_name(row, content::Kind::track);
     return ccall<const char*>(F_GetTrackFriendlyName, quick_track_stock_index(t));
 }
 PORT_FN(0x0049b230, "TrackViewer::GetTrackFriendlyName", TrackViewer_GetTrackFriendlyName_c, fp_none0<TrackViewer>)
@@ -970,6 +1006,8 @@ static void __fastcall CarViewer3D_Prev_c(CarViewer3D* self, Edx) {
 }
 PORT_FN(0x0049ce40, "CarViewer3D::Prev", CarViewer3D_Prev_c, fp_loads0<CarViewer3D>)
 static const char* __fastcall CarViewer3D_GetFriendlyName_c(CarViewer3D* self, Edx) {
+    if (const content::BrowseItem* row = quick_custom_car(self->car))
+        return quick_content_friendly_name(row, content::Kind::car);
     void* t = self->tab;
     if (t) return ccall<const char*>(F_StringTableGetEntry, t, (int32_t)0, (int32_t)1);
     return CP(0x004e4db8);

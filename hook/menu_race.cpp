@@ -79,20 +79,10 @@ static bool has_resource(const content::BrowseItem& row, const std::string& name
 // used by the stock model/map viewers. Built-in list entries remain first.
 static void append_quick_race_content(content::Kind kind, const std::vector<content::BrowseItem>& rows,
                                      std::vector<content::BrowseItem>& result) {
-    std::vector<std::string> built_in;
-    if (kind == content::Kind::car) {
-        const int32_t count = ccall<int32_t>(F_GetMaxCarFileNames);
-        for (int32_t i = 0; i < count; ++i) built_in.push_back(folded_name(ccall<const char*>(F_GetCarFileName, i)));
-    } else {
-        const int32_t count = std::max<int32_t>(0, std::min<int32_t>(8, ccall<int32_t>(F_GetTrackCount) - 2));
-        for (int32_t i = 0; i < count; ++i) built_in.push_back(folded_name(ccall<const char*>(F_GetTrackName, i)));
-    }
     for (const auto& row : rows) {
         if (row.kind != kind || !row.valid || row.duplicate) continue;
         const std::string stem = row.archive_path.stem().string();
         if (!content::game_race_name_fits(kind, stem)) continue;
-        const std::string folded_stem = folded_name(stem);
-        if (std::find(built_in.begin(), built_in.end(), folded_stem) != built_in.end()) continue;
         bool ready = true;
         for (const auto& dep : row.dependencies)
             if (dep.status != content::ResolutionStatus::found) { ready = false; break; }
