@@ -880,6 +880,10 @@ static uint8_t* g_bspbuf;
 static uint32_t g_bsp_size;
 static std::vector<bsp_tri*> g_btris;
 static std::vector<bsp_node*> g_bnodes;
+static native_track::TrackCollision g_native_bsp;
+static bool g_native_bsp_valid;
+static long g_native_bsp_parity_queries;
+static long g_native_bsp_parity_failures;
 static const uint32_t TRI_BYTES = 0x60;                          // as the stock file lays them (0x5c used)
 static void norm3(double* v) {
     double l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
@@ -937,6 +941,13 @@ static void make_bsp(std::vector<uint8_t>& out, int ntri) {
     }
 }
 static void load_bsp_payload(const std::vector<uint8_t>& payload) {
+    content::Resource descriptor;
+    descriptor.name = "track.bsp";
+    descriptor.tag = "TPSB";
+    descriptor.version = 0;
+    descriptor.size = (uint32_t)payload.size();
+    std::string native_error;
+    g_native_bsp_valid = native_track::parse_bspt(payload, descriptor, g_native_bsp, native_error);
     // made usable by the ORIGINAL loader
     g_res[1] = {payload.data(), (uint32_t)payload.size(), (int32_t)payload.size(), 0, 1, 0, g_bspbuf, 0};
     ORIG(void(__cdecl*)(const char*), 0x46fb50)("track.bsp");
@@ -955,6 +966,57 @@ static void load_bsp_payload(const std::vector<uint8_t>& payload) {
         if (n->front) st.push_back(n->front);
         if (n->back) st.push_back(n->back);
     }
+}
+static bool native_bsp_triangle_matches(const native_track::CollisionTriangle& native, const bsp_tri* original) {
+    return !memcmp(native.normal, &original->n, sizeof original->n) &&
+           !memcmp(&native.distance, &original->d, sizeof original->d) &&
+           !memcmp(native.vertices.data(), original->v, sizeof original->v) &&
+           !memcmp(native.edge_normals.data(), original->e, sizeof original->e);
+}
+static bsp_tri* rbtri();
+static void native_bsp_parity(int nq) {
+    if (!g_native_bsp_valid || g_btris.empty()) return;
+    unsigned cw;
+    for (int mode = 0; mode < 2; ++mode) {
+        _controlfp_s(&cw, mode == 0 ? _PC_24 : _PC_53, _MCW_PC);
+        const native_track::X87Precision precision = mode == 0
+            ? native_track::X87Precision::bits24 : native_track::X87Precision::bits53;
+        for (int q = 0; q < nq; ++q) {
+            bsp_tri* source = rbtri();
+            const float offset0 = rf(-30.0f, 30.0f);
+            const float offset1 = rf(-30.0f, 30.0f);
+            P3 center{
+                (source->v[0].x + source->v[1].x + source->v[2].x) / 3.0f,
+                (source->v[0].y + source->v[1].y + source->v[2].y) / 3.0f,
+                (source->v[0].z + source->v[1].z + source->v[2].z) / 3.0f
+            };
+            P3 start{center.x + source->n.x * offset0, center.y + source->n.y * offset0, center.z + source->n.z * offset0};
+            P3 end{center.x + source->n.x * offset1, center.y + source->n.y * offset1, center.z + source->n.z * offset1};
+            if ((q & 3) == 0) {
+                start = {rf(-200.0f, 200.0f), rf(-80.0f, 80.0f), rf(-200.0f, 200.0f)};
+                end = {rf(-200.0f, 200.0f), rf(-80.0f, 80.0f), rf(-200.0f, 200.0f)};
+            }
+            P3 original_point{};
+            bsp_tri* original_hit = ORIG(bsp_tri*(__cdecl*)(P3*, P3*, P3*), 0x46fbd0)(&start, &end, &original_point);
+            native_track::CollisionHit native_hit;
+            const bool native_found = native_track::intersect_collision_segment(
+                g_native_bsp, {start.x, start.y, start.z}, {end.x, end.y, end.z}, precision, native_hit);
+            bool same = (original_hit != 0) == native_found;
+            if (same && original_hit) {
+                same = !memcmp(&original_point, native_hit.point.data(), sizeof original_point) &&
+                       native_hit.triangle < g_native_bsp.triangles.size() &&
+                       native_bsp_triangle_matches(g_native_bsp.triangles[native_hit.triangle], original_hit);
+            }
+            ++g_native_bsp_parity_queries;
+            if (!same) {
+                ++g_native_bsp_parity_failures;
+                printf("native BSPT segment mismatch: mode=%s query=%d hit=%d/%d\n",
+                       mode == 0 ? "24-bit" : "53-bit", q, original_hit != 0, native_found);
+            }
+        }
+    }
+    _controlfp_s(&cw, _CW_DEFAULT, 0xffffffff);
+    _clearfp();
 }
 static bsp_tri* rbtri() { return g_btris[rnd() % g_btris.size()]; }
 static P3 bsp_point(bool big) {
@@ -1075,6 +1137,7 @@ static void bsp_queries(int nq, bool big) {
             break;
         }
     }
+    native_bsp_parity((std::min)(nq, 256));
     regions_reset();
 }
 
@@ -1211,6 +1274,9 @@ int main(int argc, char** argv) {
         printf("native parity corpus write failures: %d\n", g_native_parity_corpus_failures);
         failed++;
     }
+    printf("native BSPT parity: %ld queries, %ld mismatches\n",
+           g_native_bsp_parity_queries, g_native_bsp_parity_failures);
+    if (g_native_bsp_parity_failures) failed++;
     printf("%s\n", failed ? "FAILED" : "all identical");
     return failed ? 1 : 0;
 }

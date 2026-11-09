@@ -12,6 +12,25 @@ static void put32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
 static void put_float(std::vector<uint8_t>& bytes, size_t offset, float value) {
     uint32_t bits = 0; std::memcpy(&bits, &value, sizeof bits); put32(bytes, offset, bits);
 }
+static std::vector<uint8_t> bspt_fixture() {
+    std::vector<uint8_t> bytes(12 + 0x60, 0);
+    put32(bytes, 0, 12); // root triangle pointer
+    put_float(bytes, 12 + 8, 1.0f); // normal.y
+    const float vertices[3][3] = {{-10, 0, -10}, {0, 0, 10}, {10, 0, -10}};
+    const float edges[3][3] = {{-20, 0, 10}, {20, 0, 10}, {0, 0, -20}};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            put_float(bytes, 12 + 20 + (i * 3 + axis) * 4, vertices[i][axis]);
+            put_float(bytes, 12 + 56 + (i * 3 + axis) * 4, edges[i][axis]);
+        }
+    }
+    return bytes;
+}
+static content::Resource bspt_descriptor(const std::vector<uint8_t>& bytes) {
+    content::Resource resource;
+    resource.name = "track.bsp"; resource.tag = "TPSB"; resource.version = 0;
+    resource.size = static_cast<uint32_t>(bytes.size()); return resource;
+}
 static std::vector<uint8_t> fixture(uint32_t node_count = 1) {
     std::vector<uint8_t> bytes(0x14 + 56 + 28 * node_count, 0);
     put32(bytes, 0, 1); put32(bytes, 4, node_count); put32(bytes, 0x10, 0);
@@ -44,6 +63,14 @@ static void exercise_data_directory(const std::filesystem::path& directory) {
         assert(track.source_version == 2 && !track.triangles.empty() && !track.nodes.empty());
         native_track::SurfaceSample sample;
         (void)native_track::sample_surface(track, 0, 0, sample);
+        std::vector<uint8_t> bsp_payload; content::Resource bsp_resource;
+        native_track::TrackCollision collision;
+        assert(archive.read("track.bsp", 64u * 1024u * 1024u, bsp_payload, error, &bsp_resource));
+        assert(native_track::parse_bspt(bsp_payload, bsp_resource, collision, error));
+        assert(collision.source_version == 0 && !collision.triangles.empty() && !collision.nodes.empty());
+        native_track::CollisionHit collision_hit;
+        assert(native_track::intersect_collision_segment(collision, {0, 100, 0}, {0, -100, 0},
+                                                          native_track::X87Precision::bits53, collision_hit));
         ++parsed;
     }
     assert(parsed > 0);
@@ -93,6 +120,33 @@ int main(int argc, char** argv) {
     assert(!native_track::parse_bpp(cyclic, resource, track, error) && error.find("cycle") != std::string::npos);
     auto non_finite = bytes; put32(non_finite, 0x14 + 4, 0x7fc00000u); resource = descriptor(non_finite);
     assert(!native_track::parse_bpp(non_finite, resource, track, error) && !error.empty());
+
+    const auto bsp_bytes = bspt_fixture(); auto bsp_resource = bspt_descriptor(bsp_bytes);
+    native_track::TrackCollision collision; native_track::CollisionHit collision_hit;
+    assert(native_track::parse_bspt(bsp_bytes, bsp_resource, collision, error));
+    assert(collision.nodes.size() == 1 && collision.triangles.size() == 1);
+    assert(native_track::intersect_collision_segment(collision, {0, 10, 0}, {0, -10, 0},
+                                                      native_track::X87Precision::bits53, collision_hit));
+    assert(collision_hit.triangle == 0 && collision_hit.point == (std::array<float, 3>{0, 0, 0}));
+    assert(native_track::intersect_collision_segment(collision, {0, -10, 0}, {0, 10, 0},
+                                                      native_track::X87Precision::bits24, collision_hit));
+    assert(!native_track::intersect_collision_segment(collision, {50, 10, 50}, {50, -10, 50},
+                                                       native_track::X87Precision::bits53, collision_hit));
+    auto bad_bsp = bsp_resource; bad_bsp.tag = "TPPB";
+    assert(!native_track::parse_bspt(bsp_bytes, bad_bsp, collision, error) && !error.empty());
+    bad_bsp = bsp_resource; bad_bsp.version = 1;
+    assert(!native_track::parse_bspt(bsp_bytes, bad_bsp, collision, error) && !error.empty());
+    bad_bsp = bsp_resource; --bad_bsp.size;
+    assert(!native_track::parse_bspt(bsp_bytes, bad_bsp, collision, error) && !error.empty());
+    auto bad_bsp_payload = bsp_bytes; put32(bad_bsp_payload, 0, 0xffffffffu); bad_bsp = bspt_descriptor(bad_bsp_payload);
+    assert(!native_track::parse_bspt(bad_bsp_payload, bad_bsp, collision, error) && !error.empty());
+    std::vector<uint8_t> cyclic_bsp(36 + 0x60, 0);
+    put32(cyclic_bsp, 0, 36); put32(cyclic_bsp, 4, 12);
+    put32(cyclic_bsp, 12, 36); put32(cyclic_bsp, 16, 24);
+    put32(cyclic_bsp, 24, 36); put32(cyclic_bsp, 28, 12);
+    put_float(cyclic_bsp, 36 + 8, 1.0f);
+    bad_bsp = bspt_descriptor(cyclic_bsp);
+    assert(!native_track::parse_bspt(cyclic_bsp, bad_bsp, collision, error) && error.find("cycle") != std::string::npos);
     for (int i = 1; i < argc; ++i) exercise_data_directory(std::filesystem::path(argv[i]));
-    std::cout << "native BPP parser tests passed\n";
+    std::cout << "native BPP/BSPT parser and segment tests passed\n";
 }

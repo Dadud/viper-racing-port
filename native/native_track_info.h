@@ -32,6 +32,27 @@ struct TrackSurface {
     std::vector<Node> nodes;
 };
 
+struct CollisionTriangle {
+    float normal[3]{};
+    float distance = 0;
+    std::array<Vertex, 3> vertices{};
+    std::array<Vertex, 3> edge_normals{};
+};
+
+struct CollisionNode {
+    uint32_t triangle = 0;
+    int32_t front = -1;
+    int32_t back = -1;
+};
+
+// Host-owned BSPT collision tree decoded from pointer-offset records.
+struct TrackCollision {
+    uint32_t source_version = 0;
+    uint32_t root = 0;
+    std::vector<CollisionTriangle> triangles;
+    std::vector<CollisionNode> nodes;
+};
+
 struct SurfaceSample {
     float height = 0;
     std::array<float, 3> normal{};
@@ -46,6 +67,12 @@ struct SegmentHit {
     uint32_t triangle = 0;
 };
 
+struct CollisionHit {
+    std::array<float, 3> point{};
+    std::array<float, 3> normal{};
+    uint32_t triangle = 0;
+};
+
 // The original x87 engine used 24-bit precision in the physics thread and
 // 53-bit precision in UI/main-thread queries. Native callers must choose the
 // matching mode explicitly because x64 Windows and Linux do not inherit x87
@@ -55,6 +82,10 @@ enum class X87Precision { bits24, bits53 };
 bool parse_bpp(const std::vector<uint8_t>& payload,
                const content::Resource& descriptor,
                TrackSurface& track, std::string& error);
+
+bool parse_bspt(const std::vector<uint8_t>& payload,
+                const content::Resource& descriptor,
+                TrackCollision& collision, std::string& error);
 
 // Point query over the validated 2D splitter tree. This is an initial native
 // terrain primitive, not a claim of full collision or physics parity.
@@ -68,5 +99,13 @@ bool intersect_segment(const TrackSurface& track,
                        const std::array<float, 3>& end,
                        X87Precision precision,
                        SegmentHit& hit);
+
+// First BSPT face intersected, preserving the original near-side traversal
+// order. Models the legacy segment query, not the separate sphere-contact API.
+bool intersect_collision_segment(const TrackCollision& collision,
+                                 const std::array<float, 3>& start,
+                                 const std::array<float, 3>& end,
+                                 X87Precision precision,
+                                 CollisionHit& hit);
 
 } // namespace native_track
