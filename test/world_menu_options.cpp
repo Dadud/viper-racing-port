@@ -175,6 +175,12 @@ using namespace mob;
 namespace content {
 std::vector<Entry> game_shared_archives() { return {}; }
 }
+namespace mview {
+void quick_race_content_begin(const std::vector<content::BrowseItem>&, const std::vector<content::BrowseItem>&) {}
+bool quick_race_content_has_selection() { return false; }
+bool quick_race_content_failed() { return false; }
+void quick_race_content_end() {}
+}
 
 // ---- random numbers --------------------------------------------------------------------------------------------------
 static uint32_t g_rng = 0x6a09e667u;
@@ -1401,10 +1407,10 @@ static int directed_fix_tests() {
             HS->ntracks = 1;                                                            // the original with one: t % -1 == 0
             const Result ro1 = fx_run(f, false, w);
             HS->ntracks = 2;
-            // The rewrite intentionally adds the Content Library item to the
-            // setup dialog, so its widget allocations/logs differ from the
-            // unmodified original. Compare the race choice and resolved track
-            // result that this divide-by-zero fix is meant to preserve.
+            // The setup now activates catalog-aware viewer callbacks, so its
+            // widget allocations/logs differ from the unmodified original.
+            // Compare the race choice and resolved track result that this
+            // divide-by-zero fix is meant to preserve.
             sprintf(m, "MenuDoRaceSetup, two tracks (case %d): what the original does with one track", k);
             fx_check(!ro1.fault && ro1.ret == rn.ret && !strcmp(W.track_buf, k_tracks[0]) && fx_logged('GTNM', 0), m, &ro1);
         }
@@ -1878,11 +1884,10 @@ int main(int argc, char** argv) {
     for (int fi = 0; fi < g_nfns; fi++) {
         const Ent& f = g_fns[fi];
         if (only && !strstr(f.name, only)) continue;
-        // MenuDoRaceSetup intentionally gains a Content Library item and
-        // callback. Its UI allocations/logs cannot be bit-compared with the
-        // unmodified executable; its two-track safety behavior is covered by
-        // directed_fix_tests, and content selection has separate catalog and
-        // race-loading harnesses.
+        // MenuDoRaceSetup intentionally activates the Quick Race catalog and
+        // uses the stock car/track viewers for selection. Its UI allocations
+        // and car navigation differ from the unmodified executable; its
+        // two-track safety behavior is covered by directed_fix_tests.
         if (!strcmp(f.name, "MenuDoRaceSetup")) { skipped++; continue; }
         // the fix build: HackOptionsControl::Added always adds the Vehicle list's scroll bar, so it's checked by
         // hack_list_tests (below) instead

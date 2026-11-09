@@ -197,7 +197,8 @@ enum : uint32_t {
     F_MixerChooser_ctor = 0x0049a950,
     // group C's classes (trkview / carview / oppview / optview), by address
     F_TrackViewer_GetTrackName = 0x0049b210, F_TrackChooser_ctor = 0x0049b2d0, F_TrackChooser_dtor = 0x0049b320,
-    F_CarViewer3D_GetName = 0x0049ce90, F_CarChooser_ctor = 0x0049d250, F_CarChooser_dtor = 0x0049d2c0,
+    F_CarViewer3D_SetCar = 0x0049cdf0, F_CarViewer3D_GetName = 0x0049ce90,
+    F_CarChooser_ctor = 0x0049d250, F_CarChooser_dtor = 0x0049d2c0,
     F_OpponentViewer_ctor = 0x0049e2e0, F_OpponentViewer_dtor = 0x0049e370, F_OpponentViewer_SetCar = 0x0049eaa0,
     F_RaceOptionViewer_ctor = 0x0049f120,
 };

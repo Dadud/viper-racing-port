@@ -119,6 +119,7 @@ std::vector<BrowseItem> Catalog::browse(const BrowseQuery& query,
         item.author = entry.author;
         item.version = entry.version;
         item.description = entry.description;
+        item.resources = entry.resources;
         item.metadata_issue = entry.metadata_issue;
         item.issues = entry.issues;
         item.dependencies = entry.dependencies;

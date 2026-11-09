@@ -28,6 +28,7 @@ struct BrowseItem {
     std::string author;
     std::string version;
     std::string description;
+    std::vector<Resource> resources;
     std::string metadata_issue;
     std::vector<std::string> issues;
     std::vector<Dependency> dependencies;

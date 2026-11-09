@@ -34,6 +34,12 @@ std::vector<Entry> game_shared_archives();
 bool game_stage_selection(const std::string& car_id, const std::filesystem::path& car_archive,
                           const std::string& track_id, const std::filesystem::path& track_archive,
                           std::string& error);
+// Temporarily bind one package while a Quick Race viewer loads its native preview.
+// The final setup may keep either or both preview bindings as the race selection.
+bool game_stage_preview(Kind kind, const std::string& id,
+                        const std::filesystem::path& archive, std::string& error);
+void game_clear_preview(Kind kind);
+bool game_has_preview_selection();
 // Lightweight name-to-path binding for ResourceGet. Unlike the load-time
 // lookup below, this does not re-read and hash the archive on every resource
 // request; it only exposes the already staged selection snapshot.
