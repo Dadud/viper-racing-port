@@ -18,10 +18,16 @@
 // buffer; MenuDoRaceSetup's random track with only two rows in the track table takes the first row (it divided by 0).
 // The rest are FIX CANDIDATEs, left faithful.
 #include <stdint.h>
+#include <algorithm>
+#include <cctype>
+#include <stdio.h>
 #include <string.h>
+#include <vector>
+#include "content_game.h"
 #include "port.h"
 #include "ui_types.h"
 #include "menu_options.h"
+#include "menu_view.h"
 
 namespace {
 namespace menu_race {
@@ -43,6 +49,105 @@ static __forceinline void raw(void* p, uint32_t type, uint32_t id, uint32_t x, u
     d[7] = i1c; d[8] = data; d[9] = style; d[10] = lo; d[11] = hi; d[12] = sel; d[13] = s34;
 }
 #define RAW(n, ...) raw(fr.at(n), __VA_ARGS__)
+
+static void content_message(const char* title, const char* message) {
+    UIDialog dlg{};
+    UIDialogItem items[3];
+    item_ctor(&items[0], 5, 0, 0x20, 0x35, 0, 0, (uint32_t)(uintptr_t)message, 0, 0, 0xe, 0, 0, 0, 0);
+    item_ctor(&items[1], 2, (uint32_t)-2, 0x60, 0xc8, 0, 0, (uint32_t)(uintptr_t)"OK", 0, 0, 2, 0, 0, 0, 0);
+    item_end(&items[2]);
+    dlg.title = title;
+    dlg.background = (const char*)0x004f7020;
+    dlg.default_id = -2;
+    dlg.items = items;
+    ccall<int32_t>(F_UIDoDialog, &dlg, (int32_t)0x140, (int32_t)0xfa, (int32_t)-999, (int32_t)-999, (int32_t)1);
+}
+
+static std::string folded_name(std::string value) {
+    for (char& c : value) if (c >= 'A' && c <= 'Z') c = char(c + ('a' - 'A'));
+    return value;
+}
+
+static bool has_resource(const content::BrowseItem& row, const std::string& name) {
+    const std::string wanted = folded_name(name);
+    return std::any_of(row.resources.begin(), row.resources.end(), [&](const content::Resource& resource) {
+        return folded_name(resource.name) == wanted;
+    });
+}
+
+// Return the current Quick Race additions after requiring the native resources
+// used by the stock model/map viewers. Built-in list entries remain first.
+static void append_quick_race_content(content::Kind kind, const std::vector<content::BrowseItem>& rows,
+                                     std::vector<content::BrowseItem>& result) {
+    std::vector<std::string> built_in;
+    if (kind == content::Kind::car) {
+        const int32_t count = ccall<int32_t>(F_GetMaxCarFileNames);
+        for (int32_t i = 0; i < count; ++i) built_in.push_back(folded_name(ccall<const char*>(F_GetCarFileName, i)));
+    } else {
+        const int32_t count = std::max<int32_t>(0, std::min<int32_t>(8, ccall<int32_t>(F_GetTrackCount) - 2));
+        for (int32_t i = 0; i < count; ++i) built_in.push_back(folded_name(ccall<const char*>(F_GetTrackName, i)));
+    }
+    for (const auto& row : rows) {
+        if (row.kind != kind || !row.valid || row.duplicate) continue;
+        const std::string stem = row.archive_path.stem().string();
+        if (!content::game_race_name_fits(kind, stem)) continue;
+        const std::string folded_stem = folded_name(stem);
+        if (std::find(built_in.begin(), built_in.end(), folded_stem) != built_in.end()) continue;
+        bool ready = true;
+        for (const auto& dep : row.dependencies)
+            if (dep.status != content::ResolutionStatus::found) { ready = false; break; }
+        if (!ready) continue;
+        if (kind == content::Kind::car) {
+            if (!has_resource(row, stem + "0.mod") || !has_resource(row, stem + ".cf") || !has_resource(row, stem + "1.tab")) continue;
+        } else if (!has_resource(row, stem + ".stp")) continue;
+        result.push_back(row);
+    }
+}
+
+static void quick_race_content(std::vector<content::BrowseItem>& cars,
+                               std::vector<content::BrowseItem>& tracks) {
+    std::string error;
+    if (!content::game_refresh_catalog(error)) return;
+    const auto shared = content::game_shared_archives();
+    content::BrowseQuery query;
+    query.kind = content::BrowseKind::all;
+    query.include_invalid = false;
+    const auto rows = content::game_catalog().browse(query, shared);
+    append_quick_race_content(content::Kind::car, rows, cars);
+    append_quick_race_content(content::Kind::track, rows, tracks);
+}
+
+// The community build keeps its native Quick Race screen; the same in-game
+// viewer adapters add ready local catalog entries while that dialog is active.
+static uint8_t __cdecl MenuDoRaceSetup_content_adapter(char* car, char* track, void* game) {
+    typedef uint8_t(__cdecl* Original_t)(char*, char*, void*);
+    Original_t original = (Original_t)port_original(0x004871e0);
+    if (!original) return 0;
+    content::game_clear_selection();
+    std::vector<content::BrowseItem> quick_cars, quick_tracks;
+    quick_race_content(quick_cars, quick_tracks);
+    mview::quick_race_content_begin(quick_cars, quick_tracks);
+    const uint8_t setup_ok = original(car, track, game);
+    const bool selected_content = mview::quick_race_content_has_selection();
+    const bool preview_failed = mview::quick_race_content_failed();
+    mview::quick_race_content_end();
+    if (!setup_ok) {
+        content::game_clear_selection();
+        return 0;
+    }
+    if (preview_failed) {
+        content::game_clear_selection();
+        content_message("Preview Unavailable", "A selected car or track preview could not be loaded. Choose it again.");
+        return 0;
+    }
+    if (!selected_content) content::game_clear_selection();
+    return setup_ok;
+}
+static void fp_MenuDoRaceSetup_adapter(Footprint& f, char*, char*, void*) {
+    f.replay_only = "runs the community build's native race setup with the Quick Race catalog active";
+}
+PORT_FN_ADAPTER(0x004871e0, "MenuDoRaceSetup content adapter", MenuDoRaceSetup_content_adapter,
+                fp_MenuDoRaceSetup_adapter, 0x4b4e4b93, 6)
 
 // =====================================================================================================================
 // MenuDoRaceMenu
@@ -122,6 +227,10 @@ PORT_FN(0x00486aa0, "MenuDoRaceMenu", MenuDoRaceMenu_n, fp_MenuDoRaceMenu)
 // 0x374 the RaceOptionViewer, 0x304 the OpponentViewer, 0x200 the CarChooser (its CarViewer3D at 0x118).
 static uint8_t __cdecl MenuDoRaceSetup_n(char* car, char* track, void* game) {
     Frame<0x594> fr;
+    content::game_clear_selection();
+    std::vector<content::BrowseItem> quick_cars, quick_tracks;
+    quick_race_content(quick_cars, quick_tracks);
+    mview::quick_race_content_begin(quick_cars, quick_tracks);
     GameOptionsB* go = (GameOptionsB*)game;
     UI_GU32(S_RACESETUP_DF4) = 1;
     fr.c(0x592) = 1;
@@ -183,6 +292,7 @@ static uint8_t __cdecl MenuDoRaceSetup_n(char* car, char* track, void* game) {
                                      (int32_t)-999, (int32_t)1);
     if (r != -2) {
         ccall<void>(F_DoFlyout, (const char*)0x004f8354, (uint32_t)0);
+        content::game_clear_selection();
     } else {
         crt_strcpy(car, tcall<const char*>(F_CarViewer3D_GetName, fr.at(0x118)));
         const char* name = tcall<const char*>(F_TrackViewer_GetTrackName, fr.at(0x3d8));
@@ -198,7 +308,12 @@ static uint8_t __cdecl MenuDoRaceSetup_n(char* car, char* track, void* game) {
             name = tcall<const char*>(F_TrackViewer_GetTrackName, fr.at(0x3d8));
         }
         crt_strcpy(track, name);
-        fr.c(0x591) = 1;
+        if (mview::quick_race_content_failed()) {
+            content::game_clear_selection();
+            content_message("Preview Unavailable", "A selected car or track preview could not be loaded. Choose it again.");
+            fr.c(0x591) = 0;
+        } else if (mview::quick_race_content_has_selection()) fr.c(0x591) = 1;
+        else { content::game_clear_selection(); fr.c(0x591) = 1; }
     }
     opt_set_i(s, 0x004f8360, go->field);
     opt_set_i(s, 0x004f8368, go->realism);
@@ -214,6 +329,7 @@ static uint8_t __cdecl MenuDoRaceSetup_n(char* car, char* track, void* game) {
     tcall<void>(F_OpponentViewer_dtor, fr.at(0x304));
     tcall<void>(F_CarChooser_dtor, fr.at(0x200));
     tcall<void>(F_TrackChooser_dtor, fr.at(0x3f0));
+    mview::quick_race_content_end();
     return fr.c(0x591);
 }
 static void fp_MenuDoRaceSetup(Footprint& f, char*, char*, void*) {
@@ -239,3 +355,7 @@ PORT_FN(0x004879d0, "paintkit_cb", paintkit_cb_n, fp_paintkit_cb)
 #undef G
 }  // namespace menu_race
 }  // namespace
+
+void vp_show_content_message(const char* title, const char* message) {
+    menu_race::content_message(title, message);
+}

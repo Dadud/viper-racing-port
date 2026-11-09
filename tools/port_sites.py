@@ -24,6 +24,7 @@ import match_builds as M  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 md = Cs(CS_ARCH_X86, CS_MODE_32)
+md.detail = True
 
 # Functions the matcher can't place because a build changed them, found by hand-written signatures:
 # hex bytes, ?? for any byte, &"text" for the address of that string in the build being searched, and |
@@ -132,6 +133,16 @@ def main():
     def insns(text, tva, lo, hi):
         return list(md.disasm(text[lo - tva: hi - tva], lo))
 
+    def encoded_field(ins, kind, offset=None):
+        """Return (offset, width, value) for an instruction's immediate or displacement."""
+        if kind == "imm":
+            off, size = ins.imm_offset, ins.imm_size
+        else:
+            off, size = ins.disp_offset, ins.disp_size
+        if not size or (offset is not None and off != offset):
+            return None
+        return off, size, int.from_bytes(ins.bytes[off:off + size], "little")
+
     def site(va, off=None, old=None):
         """(target address of the instruction, of the patched field, a note) -- or (None, None, why)."""
         f = fn_of(va)
@@ -146,22 +157,49 @@ def main():
         if old is None:
             return None, None, f"in {name}: instruction differs"
         # the compilers differ (register choice, short forms): find the instruction by what it does --
-        # same mnemonic, holding the translated address (or the same constant) -- the k-th such in the function
+        # same mnemonic and encoded operand value -- the k-th such in the function. A patch field fingerprints
+        # four bytes even when it changes an imm8 and therefore spans into the following instruction.
         want = dmap.get(old) if sbase <= old < sbase + 0x300000 else old
         if want is None:
             return None, None, f"in {name}: {old:#x} not mapped"
-        mine = [i for i in insns(stext, stva, f, f + int(inv[f]["size"]))
-                if i.mnemonic == ins_at(stext, stva, va).mnemonic and struct.pack("<I", old) in i.bytes]
-        k = [i.address for i in mine].index(va)
+        source_insn = ins_at(stext, stva, va)
+        if source_insn is None:
+            return None, None, f"in {name}: no instruction at {va:08x}"
+        field = encoded_field(source_insn, "imm", off)
+        kind = "imm"
+        if field is None:
+            field = encoded_field(source_insn, "disp", off)
+            kind = "disp"
+        if field is None:
+            return None, None, f"in {name}: offset {off} is not an encoded operand"
+        _, width, raw = field
+        mask = (1 << (8 * width)) - 1
+        expected = old & mask
+        if raw != expected:
+            return None, None, f"in {name}: operand at +{off} is {raw:#x}, expected {expected:#x}"
+        source = [i for i in insns(stext, stva, f, f + int(inv[f]["size"]))
+                  if i.mnemonic == source_insn.mnemonic and
+                  any(x[2] == expected and x[1] == width
+                      for x in (encoded_field(i, kind),) if x is not None)]
+        positions = [i.address for i in source]
+        if va not in positions:
+            return None, None, f"in {name}: patch instruction is not a matching encoded operand"
+        k = positions.index(va)
         lo, hi, gap = fn_range(f, fmap)
         if lo is None:
             return None, None, f"in {name}: function not placed, no neighbours"
-        theirs = [i for i in insns(dtext, dtva, lo, hi)
-                  if i.mnemonic == mine[k].mnemonic and struct.pack("<I", want) in i.bytes]
-        if len(theirs) != len(mine):
-            return None, None, f"in {name}: {len(mine)} '{mine[k].mnemonic} {old:#x}' in v1.0, {len(theirs)} here"
-        b = theirs[k]
-        return b.address, b.address + bytes(b.bytes).index(struct.pack("<I", want)),             f"{name} (found by operand{' in the gap' if gap else ''}: {b.mnemonic} {b.op_str})"
+        target = []
+        for ins in insns(dtext, dtva, lo, hi):
+            if ins.mnemonic != source_insn.mnemonic:
+                continue
+            candidate = encoded_field(ins, kind)
+            if candidate is not None and candidate[2] == (want & ((1 << (8 * candidate[1])) - 1)):
+                target.append((ins, candidate))
+        if len(target) != len(source):
+            return None, None, f"in {name}: {len(source)} '{source_insn.mnemonic} {old:#x}' operands in v1.0, {len(target)} here"
+        b, target_field = target[k]
+        return b.address, b.address + target_field[0], \
+            f"{name} (found by operand{' in the gap' if gap else ''}: {b.mnemonic} {b.op_str})"
 
     for va in sorted(lits):
         if va in inv:

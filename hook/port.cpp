@@ -15,12 +15,18 @@ static std::vector<PortFn*>& registry() {
     return r;
 }
 
-PortFn::PortFn(uint32_t v, const char* nm, void* r, void* s, uint32_t oh, uint8_t ol)
-    : v10(v), name(nm), repl(r), shadow(s), other_hash(oh), other_len(ol) {
+PortFn::PortFn(uint32_t v, const char* nm, void* r, void* s, uint32_t oh, uint8_t ol, bool adapter)
+    : v10(v), name(nm), repl(r), shadow(s), other_hash(oh), other_len(ol), build_adapter(adapter) {
     registry().push_back(this);
 }
 
 bool port_is_new(const PortFn& f) { return f.mode != PORT_ORIGINAL && f.orig; }
+
+void* port_original(uint32_t v10) {
+    for (PortFn* f : registry())
+        if (f->v10 == v10 && f->build_adapter && f->orig && f->orig != (void*)1) return f->orig;
+    return 0;
+}
 
 // ---- trampolines ---------------------------------------------------------------------------------------
 // {address, length, rel32 offset, FNV-1a of v1.0's bytes, the same with M1's operand as zeros}: no code, only hashes --
@@ -53,6 +59,31 @@ static void* make_trampoline(const Prologue& p) {
     }
     t[p.len] = 0xE9;                                              // then on into the rest of the original
     *(int32_t*)(t + p.len + 1) = (int32_t)((p.v10 + p.len) - (uint32_t)(t + p.len + 5));
+    vpos_flush_code(t, 32);
+    return t;
+}
+
+// The catalog adapters have per-build prologue lengths verified against the supported race.bin files. Their prefixes
+// contain no relative instructions, so their native implementations can be called from a copied prologue + jump-back.
+static uint32_t build_adapter_prefix_hash(uint32_t v10) {
+    if (v10 == 0x004871e0) return 0x4b4e4b93;          // 81 ec 94 05 00 00
+    if (v10 == 0x00419720) return 0x29a128c7;          // 83 ec 04 53 56
+    if (v10 == 0x004067c0) return 0x6ade35ff;          // a1 bc e3 4e 00
+    if (v10 == 0x0040a3f0) return 0xccbd15ab;          // 83 ec 44 8d 4c 24 04
+    return 0;
+}
+
+static void* make_build_adapter_trampoline(uint32_t address, uint8_t length, uint32_t expected_hash) {
+    enum { TRAMP_BYTES = 32 * 16384 };
+    if (length < 5 || length > 16 || !expected_hash || vp_code_hash((const void*)(uintptr_t)address, length) != expected_hash)
+        return 0;
+    if (!g_tramp_page) g_tramp_page = (uint8_t*)vpos_VirtualAlloc(0, TRAMP_BYTES, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!g_tramp_page || g_tramp_used + 32 > TRAMP_BYTES) return 0;
+    uint8_t* t = g_tramp_page + g_tramp_used;
+    g_tramp_used += 32;
+    memcpy(t, (const void*)(uintptr_t)address, length);
+    t[length] = 0xE9;
+    *(int32_t*)(t + length + 1) = (int32_t)((address + length) - (uint32_t)(uintptr_t)(t + length + 5));
     vpos_flush_code(t, 32);
     return t;
 }
@@ -828,6 +859,7 @@ void port_install(const char* ini) {
     const bool sdl_audio = platform_plans_sdl_audio(ini);
     int kept_for_dsound = 0;
     for (PortFn* f : registry()) {
+        if (f->build_adapter && is_v10()) continue;            // v1.0 keeps its existing faithful rewrite
         vpos_GetPrivateProfileStringA("port", f->name, "", buf, sizeof buf, ini);
         f->mode = buf[0] && !standalone ? parse_mode(buf, dflt) : dflt;
         if (f->needs_renderer && !gl && f->mode != PORT_ORIGINAL) { f->mode = PORT_ORIGINAL; kept_for_ddraw++; continue; }
@@ -858,6 +890,18 @@ void port_install(const char* ini) {
                 continue;
             }
             write_jmp(f->v10, f->mode == PORT_SHADOW ? f->shadow : f->repl);
+        } else if (!is_v10() && f->build_adapter && f->mode == PORT_NEW) {
+            const uint32_t address = A(f->v10);
+            if (!code_is(f->v10, f->other_hash, f->other_len)) {
+                logf("port: %s stays original (the build adapter fingerprint did not match)", f->name);
+                continue;
+            }
+            f->orig = make_build_adapter_trampoline(address, f->other_len, build_adapter_prefix_hash(f->v10));
+            if (!f->orig) {
+                logf("port: %s stays original (could not create its build adapter trampoline)", f->name);
+                continue;
+            }
+            write_jmp(address, f->repl);
         } else if (!is_v10() && f->other_len && f->mode == PORT_NEW) {
             // another build: new only, after the per-build check of its first bytes
             if (!jmp_hook(f->v10, f->other_hash, f->other_len, f->repl, f->name)) continue;

@@ -101,6 +101,7 @@ struct PortFn {
     void* shadow;                     // the shadow wrapper (same signature as the rewrite)
     uint32_t other_hash;              // vp_code_hash of v1.0's first other_len bytes: a PORT_FN_BUILDS, hooked on the
     uint8_t other_len;                // race.bin builds too (only for PORT_NEW there; they check their table's), or 0
+    bool build_adapter = false;       // small race.bin wrappers that call the build's original by trampoline
     void* orig = 0;                   // trampoline to the original, once installed (v1.0)
     PortMode mode = PORT_NEW;
     volatile long calls = 0, checks = 0, mismatches = 0;
@@ -111,7 +112,7 @@ struct PortFn {
     const char* vrmod_patch = 0;                   // it is vrmod's patch the rewrite takes over (port_check_stock)
     bool needs_renderer = false;                   // calls the OpenGL renderer directly (gx_dd.cpp): original without it
     bool needs_audio = false;                      // calls the SDL audio core directly (snd_mix.cpp's wave.obj): likewise
-    PortFn(uint32_t v, const char* nm, void* r, void* s, uint32_t oh = 0, uint8_t ol = 0);
+    PortFn(uint32_t v, const char* nm, void* r, void* s, uint32_t oh = 0, uint8_t ol = 0, bool adapter = false);
 };
 
 // shadow machinery, shared by every wrapper (port.cpp). A check runs the ORIGINAL first -- it reads the
@@ -216,6 +217,14 @@ VP_SHADOW_CC(__stdcall)
         (void*)&Shadow<decltype(&NEW)>::call<&VP_CAT(port_, NEW), &NEW, &FP>, HASH, LEN); }
 #endif
 #define PORT_FN(V10, NAME, NEW, FP) PORT_FN_BUILDS(V10, NAME, NEW, FP, 0, 0)
+#ifdef VP_FUZZ
+#define PORT_FN_ADAPTER(V10, NAME, WRAPPER, FP, HASH, LEN) PORT_FN_BUILDS(V10, NAME, WRAPPER, FP, HASH, LEN)
+#else
+#define PORT_FN_ADAPTER(V10, NAME, WRAPPER, FP, HASH, LEN)                                                \
+    namespace { extern PortFn VP_CAT(port_, WRAPPER); }                                                    \
+    namespace { PortFn VP_CAT(port_, WRAPPER)(V10, NAME, (void*)&WRAPPER,                                 \
+        (void*)&Shadow<decltype(&WRAPPER)>::call<&VP_CAT(port_, WRAPPER), &WRAPPER, &FP>, HASH, LEN, true); }
+#endif
 // PORT_FN_GL: a rewrite that calls the OpenGL renderer directly (gl_core.h); with the game's own DirectDraw it
 // stays original (port_install). A harness defines VP_PORT_NEEDS_RENDERER(NEW) as nothing.
 #ifndef VP_PORT_NEEDS_RENDERER
@@ -246,6 +255,7 @@ void port_note_m1(uint32_t at, uint32_t n);    // M1 patched these bytes (a tram
 void port_install(const char* ini);            // read [port], hook every registered function
 void port_report();                            // the exit log: per function, calls / checks / mismatches
 bool port_is_new(const PortFn& f);             // is the rewrite in force (new or shadow)?
+void* port_original(uint32_t v10);             // original trampoline for an installed build adapter
 
 // Hook the v1.0 function at v10 to run `to` instead, and return a trampoline that runs the original
 // (0 if the build isn't v1.0 or the bytes aren't what prologues.inc expects). For the harness's own

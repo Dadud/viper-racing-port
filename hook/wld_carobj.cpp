@@ -1213,6 +1213,7 @@ static void __fastcall CarObject_load_car_models(CarObject* self, Edx, const cha
     }
     self->shadow_model = 0;
     game_sprintf(shadow, (const char*)0x004f5004, name);                                 // "%ss.mod"
+    // The community 1.2.6 fix restores this car's model-eligibility gate; 1.2.5 loaded this extra model regardless.
     if (high && ResourceExists(shadow)) self->shadow_model = mrModelLoadRemap(shadow, self->remap_name, 1);
     for (int i = 0; self->num_lods > i; i++) {
         game_sprintf(lod_name, (const char*)0x004f500c, name, i);                        // "%s%d.mod"

@@ -24,8 +24,17 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "ui_types.h"
+#include "content_catalog.h"
 
 namespace mview {
+
+// Quick Race supplies ready-to-preview catalog rows for the lifetime of its
+// modal dialog. Other game modes continue to use the stock lists and indices.
+void quick_race_content_begin(const std::vector<content::BrowseItem>& cars,
+                              const std::vector<content::BrowseItem>& tracks);
+bool quick_race_content_has_selection();
+bool quick_race_content_failed();
+void quick_race_content_end();
 
 struct MvCtl {                                    // UICustomControl's fields (ui_types.h), as the controls derive them
     const void* volatile vtbl;                    // +0

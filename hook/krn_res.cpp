@@ -59,11 +59,13 @@
 // `locale` at its LocaleInfo and construct the 12 unit Xlators; opt's $E5..$E50 set colour constants): the CRT
 // runs them before any hook exists.
 #include <intrin.h>
+#include <algorithm>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "viperport.h"
 #include "port.h"
+#include "content_game.h"
 
 typedef int Edx;                                    // the unused edx of a __thiscall received as __fastcall
 
@@ -244,13 +246,42 @@ static_assert(sizeof(TmMetric) == 0x44 && sizeof(TmPending) == 0x48 && sizeof(Tm
 // ---- statics --------------------------------------------------------------------------------------------------------
 // res.obj
 #define g_res_multi     (*(volatile int32_t*)0x004eae3c)           // MultiBegin("Resource")
-#define g_res_sets      (*(ResourceSetNode* volatile*)0x004eae40)  // the set list, newest first
+#define g_res_sets      (*(ResourceSetNode* volatile*)(uintptr_t)A(0x004eae40))  // the set list, newest first
 #define g_res_began     (*(volatile uint8_t*)0x004eae44)
 #define g_res_try       (*(volatile uint8_t*)0x004eae48)           // ResourceTry: no "returning NULL" report
 #define g_dir1_len      (*(volatile int32_t*)0x00509128)
 #define g_dir1          ((char*)0x00509130)                         // [0x104], ResourceBegin's first argument
 #define g_dir2          ((char*)0x00509238)                         // [0x104], its second
 #define g_dir2_len      (*(volatile int32_t*)0x0050933c)
+
+const char* FileNameForHandle(int32_t handle);
+
+namespace content {
+std::vector<Entry> game_shared_archives() {
+    std::vector<Entry> archives;
+    std::vector<std::string> seen;
+    game_set_data_directory((const char*)(uintptr_t)A(0x00509130));
+    for (ResourceSetNode* node = g_res_sets; node; node = node->next) {
+        if (!node->file.fh) continue;
+        const char* raw_path = FileNameForHandle(node->file.fh);
+        if (!raw_path || !*raw_path) continue;
+        std::filesystem::path path(raw_path);
+        std::string ext = path.extension().string();
+        for (char& c : ext) if (c >= 'A' && c <= 'Z') c = char(c + ('a' - 'A'));
+        if (ext != ".res") continue;
+        std::string key = path.lexically_normal().generic_string();
+        for (char& c : key) {
+            if (c == '/') c = '\\';
+            if (c >= 'A' && c <= 'Z') c = char(c + ('a' - 'A'));
+        }
+        if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+        seen.push_back(std::move(key));
+        archives.push_back(inspect_shared(path));
+    }
+    return archives;
+}
+} // namespace content
+
 // locale.obj
 #define g_xl_cookie     (*(volatile uint32_t*)0x004eb108)          // Xlator::g_cookie
 #define g_xl_warn       (*(volatile uint8_t*)0x004eb10c)           // report keys that don't translate
@@ -308,10 +339,10 @@ typedef void(__cdecl* Delete_t)(void*);
 static const Delete_t op_delete = (Delete_t)0x00414390;                     // operator delete -> MemFree
 // the file layer
 typedef int(__cdecl* FileOpen_t)(const char*);
-static const FileOpen_t FileOpen = (FileOpen_t)0x00411780;
+#define FileOpen ((FileOpen_t)(uintptr_t)A(0x00411780))
 static const FileOpen_t FileCreate = (FileOpen_t)0x004115f0;
 typedef void(__cdecl* FileClose_t)(int*);                                  // FileClose(int&): closes and zeroes it
-static const FileClose_t FileClose = (FileClose_t)0x00411850;
+#define FileClose ((FileClose_t)(uintptr_t)A(0x00411850))
 typedef uint8_t(__cdecl* FileReadExact_t)(int, void*, int);
 static const FileReadExact_t FileReadExact = (FileReadExact_t)0x004118b0;
 typedef uint8_t(__cdecl* FileWrite_t)(int, const void*, int);
@@ -340,7 +371,7 @@ typedef int(__cdecl* Int_t)();
 static const Int_t VidGetMegsRam = (Int_t)0x00454940;
 // the game's C runtime
 typedef int(__cdecl* Stricmp_t)(const char*, const char*);
-static const Stricmp_t stricmp_o = (Stricmp_t)0x004da350;
+#define stricmp_o ((Stricmp_t)(uintptr_t)A(0x004da350))
 typedef char*(__cdecl* Strchr_t)(const char*, int);
 static const Strchr_t strchr_o = (Strchr_t)0x004ce0c0;
 static const Strchr_t strrchr_o = (Strchr_t)0x004cf130;
@@ -376,9 +407,9 @@ static const FileInfoFn_t FileInfo_unload = (FileInfoFn_t)0x00419600;
 typedef uint8_t(__fastcall* IsSingleton_t)(const ResourceTOCEntry*, Edx);
 static const IsSingleton_t is_singleton_o = (IsSingleton_t)0x00419620;
 typedef uint8_t(__cdecl* NameFlag_t)(const char*);
-static const NameFlag_t load_resource_set_name = (NameFlag_t)0x00419720;
+#define load_resource_set_name ((NameFlag_t)(uintptr_t)A(0x00419720))
 typedef uint8_t(__cdecl* LoadFile_t)(int, const char*);
-static const LoadFile_t load_resource_set_file = (LoadFile_t)0x00419840;
+#define load_resource_set_file ((LoadFile_t)(uintptr_t)A(0x00419840))
 typedef void(__cdecl* NameFn_t)(const char*);
 static const NameFn_t ResourceSetMinimize_o = (NameFn_t)0x00419b10;       // apply_to_all_sets' callbacks
 static const NameFn_t ResourceSetMaximize_o = (NameFn_t)0x00419a80;
@@ -533,6 +564,72 @@ static bool toc_name_is(const char* res, const char* entry) {
 // (Windows couldn't open a path that long anyway).
 static bool dir_fits(int32_t dir_len, const char* name) { return !VP_FIX || (uint32_t)dir_len + strlen(name) < 0x104; }
 
+static std::string folded_resource_path(const char* path) {
+    std::string result = path ? path : "";
+    for (char& c : result) {
+        if (c == '/') c = '\\';
+        if (c >= 'A' && c <= 'Z') c = char(c + ('a' - 'A'));
+    }
+    return result;
+}
+
+// Handle selected packages separately from the game's own name-based search. The community adapter calls the
+// original loader for every ordinary resource set, preserving the patch's behavior byte for byte.
+static bool load_selected_resource_set(const char* name, uint8_t& result) {
+    std::filesystem::path selected_path;
+    bool selected = content::game_selected_archive(name, content::RacePackage::car, selected_path);
+    content::RacePackage package = content::RacePackage::car;
+    if (!selected) {
+        selected = content::game_selected_archive(name, content::RacePackage::track, selected_path);
+        package = content::RacePackage::track;
+    }
+    if (!selected) return false;
+    const char* package_name = package == content::RacePackage::car ? "car" : "track";
+    if (selected_path.empty()) {
+        content::game_mark_load_failure("The selected package changed after setup; it was not loaded.");
+        content::game_abort_selection_keep_error();
+        result = 0;
+        return true;
+    }
+    const std::string wanted = folded_resource_path(selected_path.string().c_str());
+    bool same_name_precedes_selected = false;
+    for (ResourceSetNode* n = g_res_sets; n; n = n->next) {
+        if (stricmp_o(name, set_name(n))) continue;
+        const char* loaded_path = FileNameForHandle(n->file.fh);
+        if (folded_resource_path(loaded_path) == wanted && !same_name_precedes_selected) {
+            ((volatile ResourceSetNode*)n)->loads++;
+            logf("content: selected %s %s already loaded from %s", package_name, name, loaded_path);
+            result = 1;
+            return true;
+        }
+        // ResourceGet walks this list newest first. If a different archive with
+        // the same set name is ahead of the selected file, loading the selected
+        // archive again moves a fresh node to the head and guarantees its TOC
+        // wins. Reusing the exact file's lower node would silently expose the
+        // higher-priority package instead.
+        same_name_precedes_selected = true;
+    }
+    const std::string exact_path = selected_path.string();
+    int32_t exact_fh = FileOpen(exact_path.c_str());
+    if (!exact_fh) {
+        logf("content: selected %s archive could not be opened: %s", package_name, exact_path.c_str());
+        content::game_mark_load_failure("Could not open selected package: " + exact_path);
+        content::game_abort_selection_keep_error();
+        result = 0;
+        return true;
+    }
+    result = load_resource_set_file(exact_fh, name);
+    if (!result) {
+        FileClose(&exact_fh);
+        logf("content: selected %s archive failed to load: %s", package_name, exact_path.c_str());
+        content::game_mark_load_failure("Could not load selected package: " + exact_path);
+        content::game_abort_selection_keep_error();
+    } else {
+        logf("content: selected %s resource set %s loaded from %s", package_name, name, exact_path.c_str());
+    }
+    return true;
+}
+
 // FIX: the log formats into 256 bytes (and overruns them): a name the fixes let through at any length is
 // reported cut to 128 characters
 static const char* log_name(const char* s, char (&tmp)[0x88]) {
@@ -606,6 +703,7 @@ static uint8_t __cdecl ResourceBegin_rw(const char* dir1, const char* dir2) {
                 g_dir1_len = n + 1;
             }
             g_res_began = 1;
+            content::game_set_data_directory(g_dir1);
         }
     }
     return g_res_began;
@@ -621,6 +719,8 @@ PORT_FN(0x00419710, "ResourceSetAttemptLoad", ResourceSetAttemptLoad_rw, fp_load
 // load_resource_set(char const*) (0x419720): a set already loaded counts one more load; else dir1 + name, then
 // dir2 + name (each directory's buffer has the name appended and cut off again)
 static uint8_t __cdecl load_resource_set_name_rw(const char* name) {
+    uint8_t selected_result = 0;
+    if (load_selected_resource_set(name, selected_result)) return selected_result;
     for (ResourceSetNode* n = g_res_sets; n; n = n->next)
         if (!stricmp_o(name, set_name(n))) {
             ((volatile ResourceSetNode*)n)->loads++;
@@ -643,6 +743,18 @@ static uint8_t __cdecl load_resource_set_name_rw(const char* name) {
     return ok;
 }
 PORT_FN(0x00419720, "load_resource_set(name)", load_resource_set_name_rw, fp_load_set)
+
+static uint8_t __cdecl load_resource_set_name_adapter(const char* name) {
+    uint8_t selected_result = 0;
+    if (load_selected_resource_set(name, selected_result)) return selected_result;
+    typedef uint8_t(__cdecl* Original_t)(const char*);
+    Original_t original = (Original_t)port_original(0x00419720);
+    if (!original) return 0;
+    return original(name);
+}
+static void fp_load_set_adapter(Footprint& f, const char*) { f.replay_only = "the community build's original resource loader, with exact selected-package binding"; }
+PORT_FN_ADAPTER(0x00419720, "load_resource_set(name) community adapter", load_resource_set_name_adapter,
+                fp_load_set_adapter, 0x29a128c7, 5)
 
 // load_resource_set(int, char const*) (0x419840): the header, the node, the TOC block (the first hdr_size - 16
 // bytes: the TOC and the preloaded payloads, each preloaded payload's head pointed back at its entry), the map, and
@@ -965,6 +1077,9 @@ static void* __cdecl ResourceGet_rw(const char* path, uint32_t type, uint32_t* v
     char* res = L.res;
     ResourceSetNode* n;
     uint32_t i;
+    std::filesystem::path selected_archive;
+    std::string selected_archive_name;
+    bool selected_set = false;
     MultiEnter(g_res_multi, 0, 0);
     // FIX: (k_long_path) the whole path is copied into the 64-byte set name first: 64+ characters ran over the
     // return address. It is split in buffers of its own; one too long for those is a missing resource.
@@ -983,8 +1098,17 @@ static void* __cdecl ResourceGet_rw(const char* path, uint32_t type, uint32_t* v
         goto hunt;
     }
     if (res[0] == '~') goto hunt;
+    // A selected car/track is bound to its exact staged archive. The normal
+    // list is newest-first, but merely putting that archive at the head still
+    // lets an explicit set/resource lookup fall through to a lower archive
+    // with the same set name. Restrict only this explicit selected set; loose
+    // lookups and other stock/shared set names retain the engine's search order.
+    selected_set = set[0] && content::game_selected_resource_archive(set, selected_archive);
+    if (selected_set) selected_archive_name = folded_resource_path(selected_archive.string().c_str());
     for (n = g_res_sets; n; n = ((volatile ResourceSetNode*)n)->next) {
         if (set[0] && stricmp_o(set, set_name(n))) continue;
+        if (selected_set &&
+            folded_resource_path(FileNameForHandle(n->file.fh)) != selected_archive_name) continue;
         int32_t cnt = (int32_t)((volatile ResourceSetNode*)n)->count;
         uint32_t at = 0;
         for (i = 0; (int32_t)i < cnt; i++, at += 0x24)

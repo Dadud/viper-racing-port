@@ -343,6 +343,18 @@ typedef uint8_t(__cdecl* MsgHook_t)(uint32_t, int, int);
 // addresses the handles (0x505fa8).
 static FileEntry* file_at(uint32_t names, int i) { return (FileEntry*)(uintptr_t)(names + (uint32_t)i * 0x104); }
 #define FH(handles, i)   (*(HANDLE volatile*)(uintptr_t)((handles) + (uint32_t)(i) * 0x104))
+static int32_t file_capacity();
+
+// The resource layer uses this to preserve the engine's loaded archive order
+// when it asks the portable catalog to check selected-package dependencies.
+const char* FileNameForHandle(int32_t handle) {
+    const int32_t slot = handle - 1;
+    const int32_t count = *(volatile int32_t*)(uintptr_t)A(0x00505ea0);
+    const int32_t capacity = build_is_v10() ? file_capacity() : 32;
+    if (slot < 0 || slot >= count || slot >= capacity) return "";
+    const uint32_t names = build_is_v10() ? m1_operand(0x004116ac) : A(0x00505ea8);
+    return file_at(names, slot)->name;
+}
 // win32.obj
 #define g_hwnd           (*(HWND volatile*)0x004e5eac)
 #define g_prev_fg        (*(HWND volatile*)0x004e5eb0)

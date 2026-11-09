@@ -38,6 +38,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <algorithm>
 #include <windows.h>
 #include <float.h>
 #include <math.h>
@@ -69,6 +70,8 @@ void logf(const char* fmt, ...) {
 uint32_t A(uint32_t v10) { return v10; }
 bool have(uint32_t) { return true; }
 bool build_is_v10() { return true; }
+static bool g_test_community_replay_policy;
+bool build_has_community_124_features() { return g_test_community_replay_policy; }
 
 // ---- class sizes (state_layout.inc) and the physics statics (globals_phys.inc) -------------------------------------
 struct ClassInfo { uint32_t vt, size; const char* name; uint32_t first, count; };
@@ -229,8 +232,15 @@ static FileState g_fs, g_fs_start, g_fs_after;
 static uint8_t* g_file_after;                   // the original's written bytes
 
 static uint8_t* g_databuf;                     // the replay's 2 MB, the same block each time (MemAlloc doesn't clear)
+static bool g_probe_replay_allocation;
+static uint8_t* g_probe_replay_data;
+static int32_t g_probe_replay_bytes;
 static void* __cdecl stub_MemAlloc(int n) {
     log_put('MALC'); log_put((uint32_t)n);
+    if (g_probe_replay_allocation && (n == 0x200000 || n == 0x2000000)) {
+        g_probe_replay_bytes = n;
+        return g_probe_replay_data;
+    }
     if (n == 0x200000 && g_databuf) return g_databuf;
     return arena_alloc((uint32_t)n);
 }
@@ -1236,9 +1246,46 @@ static void run_world() {
     CHECK0(PHYS, PhysReplayBGEnd_rw);
 }
 
+static bool verify_replay_capacity_setup() {
+    bool ok = true;
+    for (int policy = 0; policy < 2; ++policy) {
+        memcpy(DATA, g_data_pristine, DATA_BYTES_IMG);
+        g_test_community_replay_policy = policy != 0;
+        const int32_t expected_bytes = policy ? 0x2000000 : 0x200000;
+        g_probe_replay_data = (uint8_t*)VirtualAlloc(0, expected_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!g_probe_replay_data) return false;
+        g_probe_replay_bytes = 0;
+        g_probe_replay_allocation = true;
+        g_bump = 0;
+        g_frame_size = 0x100;
+        g_max_frames = 18750;
+        PhysReplayDoneCreating_rw();
+        g_probe_replay_allocation = false;
+        const int32_t expected_frames = (std::min)(expected_bytes / (0x100 + 0xb), g_max_frames);
+        if (g_probe_replay_bytes != expected_bytes || g_data != g_probe_replay_data ||
+            !g_frames || g_nframes != expected_frames || g_frame_size != 0x10b ||
+            g_frames[0] != -1 || g_frames[g_nframes - 1] != -1)
+            ok = false;
+        VirtualFree(g_probe_replay_data, 0, MEM_RELEASE);
+        g_probe_replay_data = 0;
+        g_data = 0;
+        g_frames = 0;
+        g_nframes = 0;
+    }
+    g_test_community_replay_policy = false;
+    g_probe_replay_allocation = false;
+    memcpy(DATA, g_data_pristine, DATA_BYTES_IMG);
+    g_bump = 0;
+    return ok;
+}
+
 int main(int argc, char** argv) {
     if (!GetEnvironmentVariableA("VP_FUZZ_CHILD", 0, 0)) return relaunch();
     setvbuf(stdout, 0, _IONBF, 0);
+    if (replay_data_bytes_for_build(false) != 0x200000 || replay_data_bytes_for_build(true) != 0x2000000) {
+        puts("FAIL replay buffer size does not match the retail/community build policy");
+        return 1;
+    }
     int worlds = argc > 1 ? atoi(argv[1]) : 40;
     if (argc > 2) g_state = (uint32_t)strtoul(argv[2], 0, 0) | 1;
     char exe[MAX_PATH];
@@ -1295,6 +1342,11 @@ int main(int argc, char** argv) {
     patch_jump(0x0043c510, (void*)&stub_collision_play);
     memcpy(g_add_event_bytes, (void*)0x0042d8b0, 5);
     add_event_real(false);
+    if (!verify_replay_capacity_setup()) {
+        puts("FAIL replay setup did not allocate the selected retail/community data capacity");
+        return 1;
+    }
+    puts("replay setup capacity passed: retail 2 MiB and community 32 MiB with matching frame tables");
     unsigned cw;
     _controlfp_s(&cw, _PC_24, _MCW_PC);
     for (g_world = 0; g_world < worlds; g_world++) run_world();

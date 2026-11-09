@@ -87,6 +87,10 @@
 #endif
 #include "../hook/port.h"
 
+namespace content {
+void game_clear_selection() {}
+}
+
 // ---- the registry: PORT_FN lists each function -------------------------------------------------------------------------
 struct Ent {
     uint32_t v10;
@@ -151,6 +155,9 @@ template <typename R, typename... A> struct Sig<R(__stdcall*)(A...)> {
 #define PORT_FN_BUILDS(V10, NAME, NEW, FP, PRO, PROLEN)                                                                 \
     static EntReg VP_CAT(reg_, NEW)({V10, NAME, (void*)&NEW, Sig<decltype(&NEW)>::fast, Sig<decltype(&NEW)>::nstack,   \
                                      Sig<decltype(&NEW)>::ret, Sig<decltype(&NEW)>::retf, &Sig<decltype(&NEW)>::fp<&FP>});
+#undef PORT_FN_ADAPTER
+#define PORT_FN_ADAPTER(V10, NAME, WRAPPER, FP, HASH, LEN)
+void* port_original(uint32_t) { return 0; }
 
 void Footprint::add(void* p, uint32_t bytes, const char* what) { if (n < MAX) r[n++] = {p, bytes, what}; }
 void Footprint::object(void* obj, const char* what) { printf("footprint: object() not expected (%s)\n", what); add(obj, 4, what); }

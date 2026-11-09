@@ -43,10 +43,14 @@
 // first call (a later call from a different stack depth shows the first frame's memory).
 #include <stdint.h>
 #include <string.h>
+#include <string>
+#include <vector>
+#include "content_game.h"
 #include "port.h"
 #include "ui_types.h"
 #include "x87.h"
 #include "menu_view.h"
+#include "menu_options.h"
 
 namespace {
 namespace menu_view {
@@ -59,6 +63,60 @@ static __forceinline uint32_t f_bits(float f) { uint32_t u; memcpy(&u, &f, 4); r
 static __forceinline uint32_t fbits_at(const volatile float* p) { return *(const volatile uint32_t*)p; }
 static __forceinline void st_f(volatile float* p, double v) { *p = (float)v; }
 #define CP(p) ((const char*)(uintptr_t)(p))
+
+static const std::vector<content::BrowseItem>* g_quick_race_cars;
+static const std::vector<content::BrowseItem>* g_quick_race_tracks;
+static int32_t g_quick_race_stock_cars;
+static int32_t g_quick_race_stock_tracks;
+static int32_t g_quick_race_normal_tracks;
+static bool g_quick_race_active;
+static bool g_quick_race_car_failed;
+static bool g_quick_race_track_failed;
+
+static const content::BrowseItem* quick_custom_car(int32_t index) {
+    const int32_t at = index - g_quick_race_stock_cars;
+    return g_quick_race_active && g_quick_race_cars && at >= 0 && (size_t)at < g_quick_race_cars->size()
+        ? &(*g_quick_race_cars)[(size_t)at] : nullptr;
+}
+static const content::BrowseItem* quick_custom_track(int32_t index) {
+    const int32_t first = g_quick_race_normal_tracks;
+    const int32_t at = index - first;
+    return g_quick_race_active && g_quick_race_tracks && at >= 0 && (size_t)at < g_quick_race_tracks->size()
+        ? &(*g_quick_race_tracks)[(size_t)at] : nullptr;
+}
+static int32_t quick_track_count() {
+    return g_quick_race_active ? g_quick_race_stock_tracks + (g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0)
+                               : ccall<int32_t>(F_GetTrackCount);
+}
+static int32_t quick_track_stock_index(int32_t index) {
+    const int32_t custom_count = g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0;
+    if (index < g_quick_race_normal_tracks) return index;
+    if (index < g_quick_race_normal_tracks + custom_count) return -1;
+    return index - custom_count;
+}
+static bool quick_stage_preview(const content::BrowseItem* row, content::Kind kind) {
+    bool& failed = kind == content::Kind::car ? g_quick_race_car_failed : g_quick_race_track_failed;
+    if (!row) { content::game_clear_preview(kind); failed = false; return true; }
+    std::string error;
+    if (content::game_stage_preview(kind, row->id, row->archive_path, error)) { failed = false; return true; }
+    content::game_clear_preview(kind);
+    failed = true;
+    return false;
+}
+static int32_t __cdecl quick_car_count() {
+    return g_quick_race_stock_cars + (g_quick_race_cars ? (int32_t)g_quick_race_cars->size() : 0);
+}
+static const char* __cdecl quick_car_name(int32_t index) {
+    if (index < g_quick_race_stock_cars) {
+        quick_stage_preview(nullptr, content::Kind::car);
+        return ccall<const char*>(mob::F_GetCarFileName, index);
+    }
+    const content::BrowseItem* row = quick_custom_car(index);
+    if (!row || !quick_stage_preview(row, content::Kind::car)) return "";
+    static std::string stem;
+    stem = row->archive_path.stem().string();
+    return stem.c_str();
+}
 
 // ---- footprint helpers --------------------------------------------------------------------------------------------------
 static __forceinline bool xl_built(uint32_t guard, uint8_t bits) { return (UI_G8(guard) & bits) == bits; }
@@ -99,9 +157,14 @@ static TrackViewer* __fastcall TrackViewer_ctor_c(TrackViewer* self, Edx) {
     self->map = 0;
     track = 0;
     OptionsGet(UI_GP(const char, S_TRK_SECTION), CP(0x004fa278), &track);
+    if (g_quick_race_active && track >= g_quick_race_normal_tracks && track < g_quick_race_stock_tracks)
+        track += g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0;
     // FIX CANDIDATE: a negative saved track_no isn't clamped (SetTrack of it: -1 shows no track, another reads outside
     // the track table); only a corrupt options file has one
-    if (!(ccall<int32_t>(F_GetTrackCount) - 1 >= track)) track = 0;
+    if (g_quick_race_active) {
+        const int32_t count = quick_track_count();
+        if (track < 0 || track >= count) track = 0;
+    } else if (!(ccall<int32_t>(F_GetTrackCount) - 1 >= track)) track = 0;
     self->frame = ccall<void*>(F_gxGetStamp, CP(0x004fa284));
     tcall<void>(F_TrackViewer_SetTrack, self, (int32_t)track);
     return self;
@@ -118,7 +181,8 @@ static void __fastcall TrackViewer_dtor_c(TrackViewer* self, Edx) {
         self->map = 0;
     }
     const int32_t t = self->track;
-    if (t != -1) OptionsSet(UI_GP(const char, S_TRK_SECTION), CP(0x004fa290), t);
+    if (t != -1) OptionsSet(UI_GP(const char, S_TRK_SECTION), CP(0x004fa290),
+                            quick_custom_track(t) ? 0 : quick_track_stock_index(t));
     self->vtbl = (const void*)(uintptr_t)VT_UICustomControl;
 }
 PORT_FN(0x0049add0, "TrackViewer::~TrackViewer", TrackViewer_dtor_c, fp_frees0<TrackViewer>)
@@ -136,7 +200,8 @@ static void __fastcall TrackViewer_Draw_c(TrackViewer* self, Edx, gxCanvas* c) {
     // GetTrackDifficulty's result indexes the three names unchecked: a track outside 0..7 (none, -1, among them) gave
     // garbage from its own stack, read outside the array here. FIX (in GetTrackDifficulty, root_race.cpp): such a
     // track counts as medium (1).
-    const int32_t d = ccall<int32_t>(F_GetTrackDifficulty, (int32_t)self->track);
+    const int32_t d = quick_custom_track(self->track) ? 1 :
+        ccall<int32_t>(F_GetTrackDifficulty, quick_track_stock_index((int32_t)self->track));
     const char* diff = loc[1 + d];
     ccall<gxCanvas*>(F_gxSetCanvas, c);
     if (void* m = self->map) ccall<void>(F_gxDrawStamp, m, (int32_t)self->x, (int32_t)(self->y + 0x17), (int32_t)0, (const void*)0);
@@ -198,10 +263,24 @@ static void __fastcall TrackViewer_SetTrack_c(TrackViewer* self, Edx, int32_t t)
     // FIX: the track's name (tracks.tab's) went into 0x50 bytes unbounded and ".stp" after it, so a name of 75 or more
     // characters overran the stack: it's cut to 74, so "<name>.stp" fits (no such map exists: none is shown, as for any
     // missing map). A name that fits is copied as before.
+    const content::BrowseItem* custom = quick_custom_track(t);
+    if (custom) {
+        if (!quick_stage_preview(custom, content::Kind::track)) {
+            tcall<void>(F_TrackViewer_set_stamp, self, CP(0x004fa2e4));
+            return;
+        }
+    } else if (g_quick_race_active) {
+        quick_stage_preview(nullptr, content::Kind::track);
+    }
     {
-        const char* tn = ccall<const char*>(F_GetTrackName, t);
+        if (custom) {
+            const std::string stem = custom->archive_path.stem().string();
+            ui_copy_bounded(buf, stem.c_str(), sizeof buf - 5);
+        } else {
+        const char* tn = ccall<const char*>(F_GetTrackName, quick_track_stock_index(t));
         if (VP_FIX) ui_copy_bounded(buf, tn, sizeof buf - 5);
         else crt_strcpy(buf, tn);
+        }
     }
     char* e = buf + crt_strlen(buf);
     *(volatile uint32_t*)e = UI_GU32(0x004fa2f4);                  // ".stp" and its terminator: a dword and a byte
@@ -212,6 +291,25 @@ PORT_FN(0x0049b0b0, "TrackViewer::SetTrack", TrackViewer_SetTrack_c, fp_loads1<T
 
 // Prev / Next: the order table's neighbour
 static void __fastcall TrackViewer_Prev_c(TrackViewer* self, Edx) {
+    if (g_quick_race_active && !quick_custom_track(self->track)) {
+        const int32_t real = quick_track_stock_index((int32_t)self->track);
+        if (real >= 0 && real < g_quick_race_normal_tracks) {
+            const char* order = ccall<const char*>(F_get_track_order, (int32_t)-1, ccall<const char*>(F_GetTrackName, real));
+            const int32_t next = ccall<int32_t>(F_GetTrackNumber, order);
+            const int32_t first = ccall<int32_t>(F_GetTrackNumber, UI_GP(const char, S_TRACK_ORDER));
+            const int32_t custom_count = g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0;
+            const int32_t last_stock = ccall<int32_t>(F_GetTrackNumber, UI_GP(const char, S_TRACK_ORDER + 28));
+            self->track = (next == last_stock && real == first && custom_count)
+                ? g_quick_race_normal_tracks + custom_count - 1 : next;
+            tcall<void>(F_TrackViewer_SetTrack, self, (int32_t)self->track);
+            return;
+        }
+    } else if (g_quick_race_active) {
+        const int32_t first = g_quick_race_normal_tracks;
+        self->track = self->track == first ? g_quick_race_normal_tracks - 1 : self->track - 1;
+        tcall<void>(F_TrackViewer_SetTrack, self, (int32_t)self->track);
+        return;
+    }
     const char* order = ccall<const char*>(F_get_track_order, (int32_t)-1, ccall<const char*>(F_GetTrackName, (int32_t)self->track));
     const int32_t n = ccall<int32_t>(F_GetTrackNumber, order);
     self->track = n;
@@ -235,6 +333,23 @@ static void fp_get_track_order(Footprint&, int32_t, const char*) {}
 PORT_FN(0x0049b170, "get_track_order", get_track_order_c, fp_get_track_order)
 
 static void __fastcall TrackViewer_Next_c(TrackViewer* self, Edx) {
+    if (g_quick_race_active && !quick_custom_track(self->track)) {
+        const int32_t real = quick_track_stock_index((int32_t)self->track);
+        if (real >= 0 && real < g_quick_race_normal_tracks) {
+            const char* order = ccall<const char*>(F_get_track_order, (int32_t)1, ccall<const char*>(F_GetTrackName, real));
+            const int32_t next = ccall<int32_t>(F_GetTrackNumber, order);
+            const int32_t first = ccall<int32_t>(F_GetTrackNumber, UI_GP(const char, S_TRACK_ORDER));
+            const int32_t custom_count = g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0;
+            self->track = (next == first && custom_count) ? g_quick_race_normal_tracks : next;
+            tcall<void>(F_TrackViewer_SetTrack, self, (int32_t)self->track);
+            return;
+        }
+    } else if (g_quick_race_active) {
+        const int32_t end = g_quick_race_normal_tracks + (g_quick_race_tracks ? (int32_t)g_quick_race_tracks->size() : 0);
+        self->track = self->track + 1 >= end ? ccall<int32_t>(F_GetTrackNumber, UI_GP(const char, S_TRACK_ORDER)) : self->track + 1;
+        tcall<void>(F_TrackViewer_SetTrack, self, (int32_t)self->track);
+        return;
+    }
     const char* order = ccall<const char*>(F_get_track_order, (int32_t)1, ccall<const char*>(F_GetTrackName, (int32_t)self->track));
     const int32_t n = ccall<int32_t>(F_GetTrackNumber, order);
     self->track = n;
@@ -245,19 +360,26 @@ PORT_FN(0x0049b1e0, "TrackViewer::Next", TrackViewer_Next_c, fp_loads0<TrackView
 static const char* __fastcall TrackViewer_GetTrackName_c(TrackViewer* self, Edx) {
     const int32_t t = self->track;
     if (t == -1) return CP(0x004fa32c);
-    return ccall<const char*>(F_GetTrackName, t);
+    if (const content::BrowseItem* row = quick_custom_track(t)) {
+        static std::string stem;
+        stem = row->archive_path.stem().string();
+        return stem.c_str();
+    }
+    return ccall<const char*>(F_GetTrackName, quick_track_stock_index(t));
 }
 PORT_FN(0x0049b210, "TrackViewer::GetTrackName", TrackViewer_GetTrackName_c, fp_none0<TrackViewer>)
 static const char* __fastcall TrackViewer_GetTrackFriendlyName_c(TrackViewer* self, Edx) {
     const int32_t t = self->track;
     if (t == -1) return CP(0x004fa330);
-    return ccall<const char*>(F_GetTrackFriendlyName, t);
+    if (const content::BrowseItem* row = quick_custom_track(t)) return row->name.c_str();
+    return ccall<const char*>(F_GetTrackFriendlyName, quick_track_stock_index(t));
 }
 PORT_FN(0x0049b230, "TrackViewer::GetTrackFriendlyName", TrackViewer_GetTrackFriendlyName_c, fp_none0<TrackViewer>)
 static const char* __fastcall TrackViewer_GetTrackText_c(TrackViewer* self, Edx) {
     const int32_t t = self->track;
     if (t == -1) return CP(0x004fa334);
-    return ccall<const char*>(F_GetTrackText, t);
+    if (const content::BrowseItem* row = quick_custom_track(t)) return row->description.c_str();
+    return ccall<const char*>(F_GetTrackText, quick_track_stock_index(t));
 }
 PORT_FN(0x0049b250, "TrackViewer::GetTrackText", TrackViewer_GetTrackText_c, fp_none0<TrackViewer>)
 
@@ -496,8 +618,8 @@ static CarViewer3D* __fastcall CarViewer3D_ctor_c(CarViewer3D* self, Edx, int32_
     self->vtbl = (const void*)(uintptr_t)VT_CarViewer3D;
     *(volatile char*)self->set = 0;
     self->car = 0;
-    self->count = count;
-    self->name_of = name_of;
+    self->count = g_quick_race_active ? quick_car_count : count;
+    self->name_of = g_quick_race_active ? quick_car_name : name_of;
     const char* section;
     if (car == -1) {
         section = UI_GP(const char, S_CAR_SECTION);
@@ -1054,14 +1176,20 @@ PORT_FN(0x0049ddf0, "CarChooser::Added", CarChooser_Added_c, fp_added0<CarChoose
 
 static uint8_t __cdecl next_car_cb_c(int32_t) {
     CarChooser* s = UI_GP(CarChooser, S_CAR_CHOOSER);
-    tcall<void>(F_CarViewer3D_Next, &s->viewer);
+    if (g_quick_race_active) {
+        const int32_t count = s->viewer.count();
+        if (count > 0) tcall<void>(mob::F_CarViewer3D_SetCar, &s->viewer, (s->viewer.car + 1) % count);
+    } else tcall<void>(F_CarViewer3D_Next, &s->viewer);
     tcall<void>(F_CarChooser_update_car, s);
     return 0;
 }
 PORT_FN(0x0049e010, "next_car_cb", next_car_cb_c, fp_cb_modal)
 static uint8_t __cdecl prev_car_cb_c(int32_t) {
     CarChooser* s = UI_GP(CarChooser, S_CAR_CHOOSER);
-    tcall<void>(F_CarViewer3D_Prev, &s->viewer);
+    if (g_quick_race_active) {
+        const int32_t count = s->viewer.count();
+        if (count > 0) tcall<void>(mob::F_CarViewer3D_SetCar, &s->viewer, (s->viewer.car + count - 1) % count);
+    } else tcall<void>(F_CarViewer3D_Prev, &s->viewer);
     tcall<void>(F_CarChooser_update_car, s);
     return 0;
 }
@@ -1709,6 +1837,32 @@ static void* __fastcall RaceOptionViewer_vdd_c(RaceOptionViewer* self, Edx, uint
 }
 PORT_FN(0x004a00a0, "RaceOptionViewer::scalar deleting destructor", RaceOptionViewer_vdd_c, fp_dtor_flags<RaceOptionViewer>)
 
+void quick_race_content_begin_impl(const std::vector<content::BrowseItem>& cars,
+                                   const std::vector<content::BrowseItem>& tracks) {
+    g_quick_race_cars = &cars;
+    g_quick_race_tracks = &tracks;
+    g_quick_race_stock_cars = std::max<int32_t>(0, ccall<int32_t>(mob::F_GetMaxCarFileNames));
+    g_quick_race_stock_tracks = std::max<int32_t>(0, ccall<int32_t>(F_GetTrackCount));
+    g_quick_race_normal_tracks = std::max<int32_t>(0, std::min<int32_t>(8, g_quick_race_stock_tracks - 2));
+    g_quick_race_car_failed = false;
+    g_quick_race_track_failed = false;
+    g_quick_race_active = true;
+}
+
+bool quick_race_content_has_selection_impl() { return content::game_has_preview_selection(); }
+bool quick_race_content_failed_impl() { return g_quick_race_car_failed || g_quick_race_track_failed; }
+
+void quick_race_content_end_impl() {
+    g_quick_race_active = false;
+    g_quick_race_cars = nullptr;
+    g_quick_race_tracks = nullptr;
+    g_quick_race_stock_cars = 0;
+    g_quick_race_stock_tracks = 0;
+    g_quick_race_normal_tracks = 0;
+    g_quick_race_car_failed = false;
+    g_quick_race_track_failed = false;
+}
+
 #undef D
 #undef CP
 #undef FP_XL
@@ -1717,3 +1871,13 @@ PORT_FN(0x004a00a0, "RaceOptionViewer::scalar deleting destructor", RaceOptionVi
 #undef OptionsSet
 }  // namespace menu_view
 }  // namespace
+
+namespace mview {
+void quick_race_content_begin(const std::vector<content::BrowseItem>& cars,
+                              const std::vector<content::BrowseItem>& tracks) {
+    menu_view::quick_race_content_begin_impl(cars, tracks);
+}
+bool quick_race_content_has_selection() { return menu_view::quick_race_content_has_selection_impl(); }
+bool quick_race_content_failed() { return menu_view::quick_race_content_failed_impl(); }
+void quick_race_content_end() { menu_view::quick_race_content_end_impl(); }
+}  // namespace mview

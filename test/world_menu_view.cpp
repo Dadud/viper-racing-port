@@ -144,9 +144,16 @@ template <typename R, typename... A> struct Sig<R(__fastcall*)(A...)> {
 void Footprint::add(void* p, uint32_t bytes, const char* what) { if (n < MAX) r[n++] = {p, bytes, what}; }
 void Footprint::object(void* obj, const char* what) { printf("footprint: object() not expected (%s)\n", what); add(obj, 4, what); }
 void Footprint::stack_ptr(void* p, const char* what) { add(p, 4, what); }
+uint32_t A(uint32_t address) { return address; }
 
 #include "../hook/menu_view.cpp"
 #include "../hook/menu_board.cpp"
+
+namespace content {
+bool game_stage_preview(Kind, const std::string&, const std::filesystem::path&, std::string&) { return false; }
+void game_clear_preview(Kind) {}
+bool game_has_preview_selection() { return false; }
+}
 
 using namespace uit;
 using namespace mview;
@@ -1556,6 +1563,22 @@ static bool game_reads_args(const char* fmt) {
     return false;
 }
 
+static void quick_race_catalog_tests() {
+    std::vector<content::BrowseItem> cars(3), tracks(9);
+    const int32_t stock_cars = ccall<int32_t>(mob::F_GetMaxCarFileNames);
+    const int32_t stock_tracks = ccall<int32_t>(F_GetTrackCount);
+    const int32_t normal_tracks = std::max<int32_t>(0, std::min<int32_t>(8, stock_tracks - 2));
+    mview::quick_race_content_begin(cars, tracks);
+    const bool expanded = menu_view::quick_car_count() == stock_cars + 3 &&
+                         menu_view::quick_custom_car(stock_cars + 2) == &cars[2] &&
+                         menu_view::quick_track_count() == stock_tracks + 9 &&
+                         menu_view::quick_custom_track(normal_tracks + 8) == &tracks[8];
+    fx_check(expanded, "Quick Race catalog exposes cars and more than eight tracks through stock viewer indices");
+    mview::quick_race_content_end();
+    fx_check(menu_view::quick_track_count() == stock_tracks,
+             "Quick Race expanded track indices are disabled outside the modal flow");
+}
+
 static int directed_fix_tests() {
     Result r;
     uint32_t o;
@@ -2067,6 +2090,9 @@ int main(int argc, char** argv) {
     mem_save(g_pristine);
     printf("world: %u $E initialisers run, %d widgets in the window, %u KB of heap used\n", (unsigned)g_setup_e.size(),
            (int)W.widgets.size(), (HS->heap_next - A_HEAP) / 1024);
+#if MENU_FIXES
+    quick_race_catalog_tests();
+#endif
 
     int dup = 0;
 #if MENU_FIXES

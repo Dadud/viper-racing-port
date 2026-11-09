@@ -86,6 +86,9 @@ struct ChainReg {
 };
 #undef PORT_FN_BUILDS
 #define PORT_FN_BUILDS(V10, NAME, NEW, FP, PRO, PROLEN) static ChainReg VP_CAT(chain_, NEW)(V10, (void*)&NEW, NAME);
+#undef PORT_FN_ADAPTER
+#define PORT_FN_ADAPTER(V10, NAME, WRAPPER, FP, HASH, LEN)
+void* port_original(uint32_t) { return 0; }
 
 void logf(const char* fmt, ...) {
     va_list ap;
@@ -103,6 +106,40 @@ void Footprint::add(void* p, uint32_t bytes, const char* what) {
 void Footprint::object(void* obj, const char* what) { add(obj, 4, what); }
 
 #include "../hook/krn_res.cpp"
+
+// The resource differential harness isolates the legacy name-based resource
+// system. Keep the new game-facing content adapter inactive here so the same
+// harness can continue comparing the untouched v1.0 lookup path.
+static bool g_force_selected_archive = false;
+static std::string g_force_selected_name;
+static std::filesystem::path g_force_selected_path;
+static content::RacePackage g_force_selected_package = content::RacePackage::car;
+static std::string g_selected_load_failure;
+static bool g_selection_abort_called = false;
+namespace content {
+Entry inspect_shared(const std::filesystem::path&) { return Entry{}; }
+void game_set_data_directory(const char*) {}
+bool game_selected_archive(const std::string& name, RacePackage package, std::filesystem::path& path) {
+    if (!g_force_selected_archive || package != g_force_selected_package ||
+        _stricmp(name.c_str(), g_force_selected_name.c_str()))
+        return false;
+    path = g_force_selected_path;
+    return true;
+}
+bool game_selected_resource_archive(const std::string& name, RacePackage package, std::filesystem::path& path) {
+    if (!g_force_selected_archive || package != g_force_selected_package ||
+        _stricmp(name.c_str(), g_force_selected_name.c_str())) return false;
+    path = g_force_selected_path;
+    return true;
+}
+bool game_selected_resource_archive(const std::string& name, std::filesystem::path& path) {
+    if (!g_force_selected_archive || _stricmp(name.c_str(), g_force_selected_name.c_str())) return false;
+    path = g_force_selected_path;
+    return true;
+}
+void game_mark_load_failure(const std::string& message) { g_selected_load_failure = message; }
+void game_abort_selection_keep_error() { g_selection_abort_called = true; }
+}
 
 // ---- random values ------------------------------------------------------------------------------------------------
 static uint32_t g_rng = 0x2545f491u;
@@ -439,6 +476,10 @@ static void __cdecl st_delete(void* p) {
 static Slot* slot_of(int h) {
     if (h < 1 || h > g_file_slots || h > C()->nslots || !C()->slot[h - 1].open) return 0;
     return &C()->slot[h - 1];
+}
+const char* FileNameForHandle(int32_t handle) {
+    Slot* slot = slot_of(handle);
+    return slot && slot->file >= 0 && (size_t)slot->file < g_vfs.size() ? g_vfs[slot->file].key.c_str() : "";
 }
 static int slot_alloc(int file, const char* name) {         // alloc_file: the next slot while fewer than 32, else a free one
     Ctrl* c = C();
@@ -2179,6 +2220,83 @@ static void evidence() {
     c_end();
 }
 
+// Regression for selected-package precedence: a different archive with the
+// same resource-set name can be above an already loaded selected archive.
+static const uint8_t* f_get(const std::string& path, uint32_t type = 0x54455820) {
+    uint32_t version = 0;
+    int32_t size = 0;
+    return (const uint8_t*)ResourceGet_rw(path.c_str(), type, &version, &size, nullptr, nullptr);
+}
+static bool selected_archive_precedence_test() {
+    auto node_count = []() { int count = 0; for (ResourceSetNode* n = g_res_sets; n; n = n->next) ++count; return count; };
+    auto exercise_package = [&](content::RacePackage package, const char* extension) {
+        reset_world();
+        c_begin(g_synthdir, g_gamedir);
+        const std::string set_name = std::string("same") + extension;
+        const std::string selected_path = g_synthdir + set_name;
+        const std::string shadow_path = g_gamedir + set_name;
+        Ent selected_entry{};
+        selected_entry.name = "selected.tex";
+        selected_entry.type = 0x54455820;
+        selected_entry.payload = {0x51, 0x52, 0x53};
+        Ent shadow_entry{};
+        shadow_entry.name = "shadow.tex";
+        shadow_entry.type = 0x54455820;
+        shadow_entry.payload = {0x21, 0x22, 0x23};
+        vfs_mem(selected_path, make_tsr({selected_entry}, 1, 0));
+        vfs_mem(shadow_path, make_tsr({shadow_entry}, 1, 0));
+
+        int selected_handle = st_file_open(selected_path.c_str());
+        if (!selected_handle || !load_resource_set_file_rw(selected_handle, set_name.c_str())) return false;
+        int shadow_handle = st_file_open(shadow_path.c_str());
+        if (!shadow_handle || !load_resource_set_file_rw(shadow_handle, set_name.c_str())) return false;
+        if (node_count() != 2 ||
+            folded_resource_path(FileNameForHandle(g_res_sets->file.fh)) != folded_resource_path(shadow_path.c_str()))
+            return false;
+
+        g_force_selected_name = set_name;
+        g_force_selected_path = selected_path;
+        g_force_selected_package = package;
+        g_force_selected_archive = true;
+        uint8_t result = 0;
+        if (!load_selected_resource_set(set_name.c_str(), result) || result != 1 || node_count() != 3) return false;
+        if (folded_resource_path(FileNameForHandle(g_res_sets->file.fh)) != folded_resource_path(selected_path.c_str()))
+            return false;
+        const uint8_t* selected_resource = f_get(set_name + "/selected.tex", 0x54455820);
+        const uint8_t* shadow_resource = f_get(set_name + "/shadow.tex", 0x54455820);
+        if (!selected_resource || memcmp(selected_resource, "QRS", 3) || shadow_resource) {
+            printf("selected %s resource check: selected %p %02x%02x%02x, shadow %p\n", extension,
+                   selected_resource, selected_resource ? selected_resource[0] : 0,
+                   selected_resource ? selected_resource[1] : 0, selected_resource ? selected_resource[2] : 0,
+                   shadow_resource);
+            return false;
+        }
+        const int loads = g_res_sets->loads;
+        result = 0;
+        if (!load_selected_resource_set(set_name.c_str(), result) || result != 1 || node_count() != 3 ||
+            g_res_sets->loads != loads + 1) return false;
+
+        // A selected path that disappears after setup must fail closed even
+        // when the normal game directory has a same-name archive available.
+        g_force_selected_path = g_synthdir + "missing-selected" + extension;
+        g_selected_load_failure.clear();
+        g_selection_abort_called = false;
+        const int nodes_before_failure = node_count();
+        const uint8_t failure_result = load_resource_set_name_rw(set_name.c_str());
+        const bool failed_closed = failure_result == 0 &&
+            node_count() == nodes_before_failure && g_selection_abort_called &&
+            g_selected_load_failure.find("Could not open selected package:") == 0;
+        if (!failed_closed)
+            printf("selected %s missing-file guard: result %u, nodes %d/%d, aborted %d, message %s\n",
+                   extension, (unsigned)failure_result, node_count(), nodes_before_failure, g_selection_abort_called,
+                   g_selected_load_failure.c_str());
+        g_force_selected_archive = false;
+        return failed_closed;
+    };
+    return exercise_package(content::RacePackage::car, ".car") &&
+           exercise_package(content::RacePackage::track, ".trk");
+}
+
 #ifdef FIX_TESTS
 // ---- the fixes on their own (FIX_TESTS) -------------------------------------------------------------------------------------
 // M1's move of the options and language tables, into the arena here (the game: DLL statics)
@@ -2247,6 +2365,7 @@ static void f_begin() {
     args_reset();
     rw(0x00419640, ResourceBegin_rw, (const char*)arg_str(g_synthdir), (const char*)arg_str(g_gamedir));
 }
+
 static uint8_t f_load(const std::string& name) {
     args_reset();
     return (uint8_t)rw(0x00419710, ResourceSetAttemptLoad_rw, (const char*)arg_str(name));
@@ -2254,13 +2373,6 @@ static uint8_t f_load(const std::string& name) {
 static void f_unload(const std::string& name) {
     args_reset();
     rw(0x00419bb0, ResourceSetUnload_rw, (const char*)arg_str(name));
-}
-static const uint8_t* f_get(const std::string& path, uint32_t type = 0x54455820) {
-    args_reset();
-    const char* p = arg_str(path);
-    uint32_t* ver = (uint32_t*)arg_buf(4);
-    int32_t* size = (int32_t*)arg_buf(4);
-    return (const uint8_t*)(uintptr_t)(uint32_t)rw(0x00419fa0, ResourceGet_rw, p, type, ver, size, (uint8_t*)0, (uint8_t*)0);
 }
 static uint8_t f_exists(const std::string& path) {
     args_reset();
@@ -2620,6 +2732,11 @@ int main(int argc, char** argv) {
     C()->wf_len[0] = -1;
     for (int i = 1; i < NWF; i++) C()->wf_len[i] = -1;
     ww_sync();
+    if (argc > 4 && !strcmp(argv[4], "selected-precedence")) {
+        const bool ok = selected_archive_precedence_test();
+        printf("selected archive precedence: %s\n", ok ? "passed" : "FAILED");
+        return ok ? 0 : 1;
+    }
     int nfn = 0;
     for (ChainReg* r = ChainReg::head(); r; r = r->next) nfn++;
     printf("%d rewrites; %d rounds, seed 0x%08x\n", nfn, rounds, g_rng);

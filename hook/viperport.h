@@ -25,6 +25,9 @@ enum { VP_LIFT_SOUNDS = 1024 };
 // is the running build v1.0 race.exe (the reference build, whose addresses need no table)?
 bool build_is_v10();
 
+// does the running executable include the community 1.2.4 engine changes (1.2.4, 1.2.5 or 1.2.6)?
+bool build_has_community_124_features();
+
 // does the running build's table have this v1.0 address? (quietly; A() logs a miss)
 bool have(uint32_t v10);
 
