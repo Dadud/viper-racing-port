@@ -345,12 +345,23 @@ i386 run before drawing conclusions about physics parity.
 
 ### Content inventory development
 
-The read-only native inventory is described in [ARCHITECTURE.md](ARCHITECTURE.md) and
-[MOD_COMPATIBILITY.md](MOD_COMPATIBILITY.md). It is not yet connected to the game's menus or loader.
-Its synthetic, asset-free test can be run with a C++17 compiler:
+The native inventory and catalog are described in [ARCHITECTURE.md](ARCHITECTURE.md) and
+[MOD_COMPATIBILITY.md](MOD_COMPATIBILITY.md). The single-race setup now has an opt-in local car/track browser, with
+exact archive paths bound into resource loading. Community v1.2.6 is the primary compatibility target so the latest
+patch behavior remains the baseline. The Windows x86 DLL has been exercised in v1.0 and community v1.2.6: selected
+community content loaded into live races by exact archive path, and a standard v1.2.6 race still used the stock path
+when the browser was skipped. In an isolated v1.2.6 copy, search and favorite filtering also worked, and the favorite
+was persisted under `Config`. Runtime validation of v1.1 and community v1.2.4/.5 remains outstanding.
+The synthetic, asset-free test can be run on Windows with MSVC for both x86 and x64:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/test_content_catalog.ps1
+```
+
+Or build it directly with a C++17 host compiler:
 
 ```sh
-c++ -std=c++17 -Wall -Wextra hook/content_registry.cpp hook/content_sha256.cpp hook/content_preferences.cpp test/content_registry_test.cpp -o /tmp/vp-content-test
+c++ -std=c++17 -Wall -Wextra hook/content_registry.cpp hook/content_catalog.cpp hook/content_game.cpp hook/content_manifest.cpp hook/content_sha256.cpp hook/content_preferences.cpp test/content_registry_test.cpp -o /tmp/vp-content-test
 /tmp/vp-content-test
 ```
 

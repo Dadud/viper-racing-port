@@ -18,7 +18,9 @@ mkdir -p "$OUT"
 "$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} hook/w32_path.cpp test/w32_path_portable_test.cpp -o "$OUT/w32_path_portable_test"
 "$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} hook/legacy_pe.cpp test/legacy_pe_test.cpp -o "$OUT/legacy_pe_test"
 "$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} test/ui_string_list_core_test.cpp -o "$OUT/ui_string_list_core_test"
-"$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} hook/content_registry.cpp hook/content_manifest.cpp hook/content_sha256.cpp hook/content_preferences.cpp test/content_registry_test.cpp -o "$OUT/content_registry_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} hook/content_registry.cpp hook/content_catalog.cpp hook/content_game.cpp hook/content_manifest.cpp hook/content_sha256.cpp hook/content_preferences.cpp test/content_registry_test.cpp -o "$OUT/content_registry_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} test/native_ui_layout_test.cpp -o "$OUT/native_ui_layout_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} native/native_menu_model.cpp hook/content_registry.cpp hook/content_catalog.cpp hook/content_game.cpp hook/content_manifest.cpp hook/content_sha256.cpp hook/content_preferences.cpp test/native_menu_model_test.cpp -o "$OUT/native_menu_model_test"
 run_test() {
     if [ -n "${VP_TEST_RUNNER:-}" ]; then "$VP_TEST_RUNNER" "$1"; else "$1"; fi
 }
@@ -36,3 +38,5 @@ run_test "$OUT/w32_hostent_portable_test"
 run_test "$OUT/legacy_pe_test"
 run_test "$OUT/ui_string_list_core_test"
 run_test "$OUT/content_registry_test"
+run_test "$OUT/native_ui_layout_test"
+run_test "$OUT/native_menu_model_test"

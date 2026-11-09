@@ -154,25 +154,61 @@ struct Xlat { uint32_t v10, here, value; };
 static const Xlat k_v11[] = {
 #include "sites_v11.inc"
 };
-static const Xlat k_v12x[] = {
-#include "sites_v12x.inc"
+static const Xlat k_v124[] = {
+#include "sites_v12_4.inc"
 };
-struct Build { const char* name; uint32_t timestamp; const Xlat* table; int n; };
+static const Xlat k_v125[] = {
+#include "sites_v12_5.inc"
+};
+static const Xlat k_v126[] = {
+#include "sites_v12_6.inc"
+};
+struct Build { const char* name; uint32_t timestamp; const Xlat* table; int n; const char* marker; };
 static const Build k_builds[] = {
-    {"v1.0 race.exe", 0x362de68c, 0, 0},                                // the addresses as written
-    {"v1.1 race.bin", 0x36acae44, k_v11, sizeof k_v11 / sizeof k_v11[0]},
-    {"1.2.4-1.2.6 race.bin", 0x40e074ad, k_v12x, sizeof k_v12x / sizeof k_v12x[0]},
+    {"v1.0 race.exe", 0x362de68c, 0, 0, 0},                             // the addresses as written
+    {"v1.1 race.bin", 0x36acae44, k_v11, sizeof k_v11 / sizeof k_v11[0], 0},
+    {"v1.2.4 race.bin", 0x40e074ad, k_v124, sizeof k_v124 / sizeof k_v124[0], "v1.2.4 BETA"},
+    {"v1.2.5 race.bin", 0x40e074ad, k_v125, sizeof k_v125 / sizeof k_v125[0], "v1.2.5 2016"},
+    {"v1.2.6 race.bin", 0x40e074ad, k_v126, sizeof k_v126 / sizeof k_v126[0], "v1.2.6 2017"},
 };
 static const Build* g_build;
 static int g_unresolved;
 
 static const Xlat* xlat(uint32_t v10) {
-    for (int i = 0; i < g_build->n; i++)
-        if (g_build->table[i].v10 == v10) return &g_build->table[i];
+    int lo = 0, hi = g_build->n;
+    while (lo < hi) {
+        const int mid = lo + (hi - lo) / 2;
+        const Xlat& candidate = g_build->table[mid];
+        if (candidate.v10 == v10) return &candidate;
+        if (candidate.v10 < v10) lo = mid + 1;
+        else hi = mid;
+    }
+    return 0;
+}
+
+static const Build* find_build(const uint8_t* image, uint32_t timestamp, uint32_t image_size,
+                               const IMAGE_SECTION_HEADER* sections, uint16_t section_count) {
+    for (const Build& candidate : k_builds) {
+        if (candidate.timestamp != timestamp) continue;
+        if (!candidate.marker) return &candidate;
+        const size_t marker_size = strlen(candidate.marker) + 1;
+        for (uint16_t i = 0; i < section_count; ++i) {
+            const IMAGE_SECTION_HEADER& section = sections[i];
+            if (!(section.Characteristics & IMAGE_SCN_MEM_READ) || section.VirtualAddress >= image_size) continue;
+            const uint32_t span = (std::min)(section.Misc.VirtualSize ? section.Misc.VirtualSize : section.SizeOfRawData,
+                                              image_size - section.VirtualAddress);
+            if (marker_size > span) continue;
+            for (uint32_t off = 0; off <= span - marker_size; ++off)
+                if (!memcmp(image + section.VirtualAddress + off, candidate.marker, marker_size)) return &candidate;
+        }
+    }
     return 0;
 }
 
 bool build_is_v10() { return g_build && !g_build->table; }
+bool build_has_community_124_features() {
+    return g_build == &k_builds[2] || g_build == &k_builds[3] || g_build == &k_builds[4];
+}
 
 // viperport.exe --probe (standalone.h): the DLL loaded only to run the stock check on race.exe's image at 0x400000 --
 // DllMain does nothing, and this names the build from the image's own headers, as install() does from GetModuleHandle
@@ -182,8 +218,8 @@ bool vp_probe_build() {
     MEMORY_BASIC_INFORMATION mbi;
     if (!vpos_VirtualQuery(base, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return false;
     const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
-    for (const Build& b : k_builds)
-        if (nt->FileHeader.TimeDateStamp == b.timestamp) g_build = &b;
+    g_build = find_build(base, nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage,
+                         IMAGE_FIRST_SECTION(nt), nt->FileHeader.NumberOfSections);
     return build_is_v10();
 }
 
@@ -755,8 +791,8 @@ static void install_diagnostics() {
 static void install() {
     uint8_t* base = (uint8_t*)vpos_GetModuleHandleA(NULL);
     IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
-    for (const Build& b : k_builds)
-        if (nt->FileHeader.TimeDateStamp == b.timestamp) g_build = &b;
+    g_build = find_build(base, nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage,
+                         IMAGE_FIRST_SECTION(nt), nt->FileHeader.NumberOfSections);
     if ((uintptr_t)base != 0x400000 || !g_build) {
         logf("host isn't a known build (base %p, timestamp %08lx): nothing hooked", base, nt->FileHeader.TimeDateStamp);
         return;

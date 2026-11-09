@@ -74,7 +74,7 @@ if [ $RELEASE = 1 ]; then
 fi
 
 # build_gcc.bat's VP_SOURCES, in its order, plus the Linux-only files
-PATTERNS="viperport.cpp port.cpp replay.cpp session.cpp standalone.cpp content_registry.cpp content_manifest.cpp content_sha256.cpp content_preferences.cpp legacy_pe.cpp net_*.cpp crt_*.cpp edit_*.cpp phys_*.cpp \
+PATTERNS="viperport.cpp port.cpp replay.cpp session.cpp standalone.cpp content_registry.cpp content_catalog.cpp content_game.cpp content_manifest.cpp content_sha256.cpp content_preferences.cpp legacy_pe.cpp net_*.cpp crt_*.cpp edit_*.cpp phys_*.cpp \
 wld_*.cpp krn_*.cpp gx_*.cpp snd_*.cpp ui_*.cpp menu_*.cpp root_*.cpp career_*.cpp paint_*.cpp w32_*.cpp vp_os.cpp \
 platform.cpp gl_table.cpp gl_core.cpp gl_dxgi.cpp ddraw_gl.cpp dsound_sdl.cpp vp_os_linux.cpp linux_todo.cpp"
 SOURCES=()

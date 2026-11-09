@@ -59,6 +59,8 @@
     static const uint32_t VP_CAT(addr_, NEW) = V10;                                                        \
     static const char* const VP_CAT(name_, NEW) = NAME;                                                   \
     static constexpr auto VP_CAT(fpof_, NEW) = &FP;
+#undef PORT_FN_ADAPTER
+#define PORT_FN_ADAPTER(V10, NAME, WRAPPER, FP, HASH, LEN)
 
 // ---- what the rewrites link against, standing in for the DLL ------------------------------------------
 static int g_logf_count;
@@ -73,6 +75,12 @@ void logf(const char* fmt, ...) {
 uint32_t A(uint32_t v10) { return v10; }
 bool have(uint32_t) { return true; }
 bool build_is_v10() { return true; }
+void* port_original(uint32_t) { return 0; }
+void vp_show_content_message(const char*, const char*) {}
+namespace content {
+void game_clear_selection() {}
+bool game_selection_load_failure(std::string&) { return false; }
+}
 void Footprint::add(void* p, uint32_t bytes, const char* what) {
     if (n < MAX) r[n++] = {p, bytes, what};
 }

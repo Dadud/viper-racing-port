@@ -8,7 +8,9 @@
 #include <fstream>
 #include <map>
 #include <limits>
+#include <new>
 #include <set>
+#include <stdexcept>
 
 
 namespace content {
@@ -20,7 +22,48 @@ std::string lower(std::string s) {
 uint32_t le32(const unsigned char* p) {
     return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
 }
-Entry inspect(const std::filesystem::path& path, Kind kind) {
+bool validate_model_info_layout(std::ifstream& f, uint64_t payload_offset, uint32_t payload_size,
+                                uint32_t version, std::string& issue) {
+    constexpr uint32_t k_minf_v0 = 0;
+    constexpr uint32_t k_minf_v1 = 1;
+    constexpr uint32_t k_header_size = 0x28;
+    if (version != k_minf_v0 && version != k_minf_v1) {
+        issue = "unsupported model-info version";
+        return false;
+    }
+    if (payload_size < k_header_size) {
+        issue = "model-info header is truncated";
+        return false;
+    }
+    unsigned char header[k_header_size];
+    f.clear();
+    f.seekg(static_cast<std::streamoff>(payload_offset));
+    if (!f.read(reinterpret_cast<char*>(header), sizeof header)) {
+        issue = "cannot read model-info header";
+        return false;
+    }
+    const uint32_t count_offsets[] = {0x00, 0x08, 0x10, 0x18, 0x20};
+    const uint32_t count_strides[] = {32, 32, 8, 16, 4};
+    uint64_t expected_size = k_header_size;
+    for (size_t i = 0; i < sizeof count_offsets / sizeof count_offsets[0]; ++i) {
+        const uint32_t raw_count = le32(header + count_offsets[i]);
+        if (raw_count > 0x7fffffffu) {
+            issue = "model-info contains a negative count";
+            return false;
+        }
+        if (i == 0 && raw_count > 32768) {
+            issue = "model vertex count exceeds the signed 16-bit index capacity";
+            return false;
+        }
+        expected_size += uint64_t(raw_count) * count_strides[i];
+        if (expected_size > payload_size) {
+            issue = "model-info arrays exceed the resource size";
+            return false;
+        }
+    }
+    return true;
+}
+Entry inspect(std::ifstream& f, const std::filesystem::path& path, Kind kind) {
     Entry e{}; e.path = path; e.kind = kind; e.name = path.stem().string();
     const auto manifest = load_manifest(path);
     e.metadata_present = manifest.present;
@@ -29,8 +72,9 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     e.author = manifest.metadata.author;
     e.version = manifest.metadata.version;
     e.description = manifest.metadata.description;
-    std::ifstream f(path, std::ios::binary);
     if (!f) { e.issues.push_back("Cannot open file"); return e; }
+    f.clear();
+    f.seekg(0);
     // Stream the fingerprint: never allocate based on an untrusted file's size.
     Sha256 hash; uint64_t size = 0;
     char buf[16384];
@@ -82,8 +126,15 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
             e.issues.push_back("Missing member marker: " + m.name); return e;
         }
         if (uint64_t(m.size) > size - cursor - 8) { e.issues.push_back("Truncated member: " + m.name); return e; }
+        if (m.tag == "FNIM") { // mrModelInfoGet: MINF (stored little-endian as "FNIM")
+            std::string model_issue;
+            if (!validate_model_info_layout(f, cursor + 8, m.size, m.version, model_issue)) {
+                e.issues.push_back("Invalid model resource " + m.name + ": " + model_issue);
+                return e;
+            }
+        }
         e.members.push_back(m.name);
-        e.resources.push_back({m.name, m.tag, m.version, m.size});
+        e.resources.push_back({m.name, m.tag, m.version, m.size, cursor + 8});
         cursor += 8 + uint64_t(m.size);
         if (i + 1 == core_count) core_end = cursor;
     }
@@ -119,6 +170,10 @@ Entry inspect(const std::filesystem::path& path, Kind kind) {
     resolve_dependencies(e, {});
     return e;
 }
+Entry inspect(const std::filesystem::path& path, Kind kind) {
+    std::ifstream f(path, std::ios::binary);
+    return inspect(f, path, kind);
+}
 bool same_bytes(const std::filesystem::path& a, const std::filesystem::path& b) {
     std::ifstream x(a, std::ios::binary), y(b, std::ios::binary);
     if (!x || !y) return false;
@@ -132,20 +187,35 @@ bool same_bytes(const std::filesystem::path& a, const std::filesystem::path& b) 
     }
 }
 }
-Registry scan(const std::filesystem::path& root) {
-    Registry r; std::error_code ec;
-    std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
-    if (ec) { r.issues.push_back("Cannot scan root: " + ec.message()); return r; }
-    while (it != end) {
-        auto path = it->path();
-        auto status = it->symlink_status(ec);
-        if (ec) { r.issues.push_back("Cannot inspect " + path.string() + ": " + ec.message()); ec.clear(); }
-        else if (std::filesystem::is_regular_file(status)) {
-            auto ext = lower(path.extension().string());
-            if (ext == ".car" || ext == ".trk" || ext == ".tra") r.entries.push_back(inspect(path, ext == ".car" ? Kind::car : Kind::track));
+Registry scan(const std::filesystem::path& root) { return scan_roots(std::vector<std::filesystem::path>{root}); }
+Registry scan_roots(const std::vector<std::filesystem::path>& roots) {
+    Registry r;
+    std::set<std::string> seen_paths;
+    for (const auto& root : roots) {
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+        if (ec) { r.issues.push_back("Cannot scan root " + root.string() + ": " + ec.message()); continue; }
+        while (it != end) {
+            const auto path = it->path();
+            const auto status = it->symlink_status(ec);
+            if (ec) {
+                r.issues.push_back("Cannot inspect " + path.string() + ": " + ec.message());
+                ec.clear();
+            } else if (std::filesystem::is_regular_file(status)) {
+                auto ext = lower(path.extension().string());
+                if (ext == ".car" || ext == ".trk" || ext == ".tra") {
+                    std::error_code path_ec;
+                    auto normalized = std::filesystem::weakly_canonical(path, path_ec);
+                    std::string key = (path_ec ? path.lexically_normal() : normalized).generic_string();
+#ifdef _WIN32
+                    key = lower(std::move(key)); // Windows paths compare case-insensitively.
+#endif
+                    if (seen_paths.insert(key).second) r.entries.push_back(inspect(path, ext == ".car" ? Kind::car : Kind::track));
+                }
+            }
+            it.increment(ec);
+            if (ec) { r.issues.push_back("Scan error: " + ec.message()); ec.clear(); }
         }
-        it.increment(ec);
-        if (ec) { r.issues.push_back("Scan error: " + ec.message()); ec.clear(); }
     }
     std::sort(r.entries.begin(), r.entries.end(), [](const Entry& a, const Entry& b) { return a.path.generic_string() < b.path.generic_string(); });
     std::map<std::string, std::vector<size_t>> hashes;
@@ -160,6 +230,111 @@ Registry scan(const std::filesystem::path& root) {
     }
     return r;
 }
+Entry inspect_archive(const std::filesystem::path& path) {
+    const auto ext = lower(path.extension().string());
+    if (ext == ".car") return inspect(path, Kind::car);
+    if (ext == ".trk" || ext == ".tra") return inspect(path, Kind::track);
+    Entry e{};
+    e.path = path;
+    e.name = path.stem().string();
+    e.issues.push_back("Unsupported content archive extension");
+    return e;
+}
+
+bool ArchiveReader::open(const Entry& expected, std::string& error) {
+    close();
+    error.clear();
+    if (expected.id.empty() || expected.path.empty()) {
+        error = "Selected archive has no stable identity or path";
+        return false;
+    }
+    file_.open(expected.path, std::ios::binary);
+    if (!file_) {
+        error = "Cannot open selected archive: " + expected.path.string();
+        close();
+        return false;
+    }
+    Entry inspected = inspect(file_, expected.path, expected.kind);
+    if (!inspected.valid) {
+        error = inspected.issues.empty() ? "Selected archive is invalid" : inspected.issues.front();
+        close();
+        return false;
+    }
+    if (inspected.id != expected.id) {
+        error = "Selected archive changed after it was indexed";
+        close();
+        return false;
+    }
+    entry_ = std::move(inspected);
+    return true;
+}
+
+bool ArchiveReader::read(const std::string& name, size_t max_size,
+                         std::vector<uint8_t>& bytes, std::string& error,
+                         Resource* descriptor) {
+    error.clear();
+    if (!is_open()) {
+        error = "No validated archive is open";
+        return false;
+    }
+    const std::string key = lower(name);
+    const Resource* found = nullptr;
+    for (const auto& resource : entry_.resources) {
+        if (lower(resource.name) != key) continue;
+        if (found) {
+            error = "Resource name is ambiguous in selected archive: " + name;
+            return false;
+        }
+        found = &resource;
+    }
+    if (!found) {
+        error = "Resource is not present in selected archive: " + name;
+        return false;
+    }
+    if (found->size > max_size) {
+        error = "Resource exceeds the caller's read limit: " + name;
+        return false;
+    }
+    if (found->offset > static_cast<uint64_t>((std::numeric_limits<std::streamoff>::max)()) ||
+        found->size > static_cast<uint32_t>((std::numeric_limits<std::streamsize>::max)())) {
+        error = "Resource range cannot be represented by this host stream: " + name;
+        return false;
+    }
+    file_.clear();
+    file_.seekg(static_cast<std::streamoff>(found->offset));
+    if (!file_) {
+        error = "Cannot seek to selected resource: " + name;
+        return false;
+    }
+    std::vector<uint8_t> result;
+    if (found->size > result.max_size()) {
+        error = "Resource exceeds the host vector capacity: " + name;
+        return false;
+    }
+    try {
+        result.resize(found->size);
+    } catch (const std::bad_alloc&) {
+        error = "Not enough memory to read selected resource: " + name;
+        return false;
+    } catch (const std::length_error&) {
+        error = "Resource exceeds the host vector capacity: " + name;
+        return false;
+    }
+    if (found->size && !file_.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(found->size))) {
+        error = "Cannot read selected resource: " + name;
+        return false;
+    }
+    bytes.swap(result);
+    if (descriptor) *descriptor = *found;
+    return true;
+}
+
+void ArchiveReader::close() {
+    if (file_.is_open()) file_.close();
+    file_.clear();
+    entry_ = Entry{};
+}
+
 InstallResult install_archive(const std::filesystem::path& source, const std::filesystem::path& library_root) {
     InstallResult result;
     auto reject = [&](InstallStatus status, std::string error) {

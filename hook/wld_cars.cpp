@@ -52,8 +52,11 @@
 #include <string.h>
 #include "viperport.h"
 #include "port.h"
+#include "content_game.h"
 #include "x87.h"
 #include "phys_types.h"
+
+void vp_show_content_message(const char* title, const char* message);
 
 #define D(x) ((double)(x))                          // a register value (x87.h)
 typedef int Edx;                                    // the unused edx of a __thiscall received as __fastcall
@@ -108,7 +111,8 @@ struct GameOptions { uint32_t _00[3]; int32_t mode; uint32_t _10; int32_t laps; 
                      int32_t strength; uint8_t _24, reversed, _26[2]; };
 static_assert(offsetof(GameOptions, strength) == 0x20 && offsetof(GameOptions, reversed) == 0x25 && sizeof(GameOptions) == 0x28, "GameOptions");
 struct World { int32_t version, size; char track[0x20]; CarList cars; GameOptions options; };
-static_assert(offsetof(World, cars) == 0x28 && offsetof(World, options) == 0xcac && sizeof(World) == 0xcd4, "World");
+static_assert(offsetof(World, cars) == 0x28 && offsetof(World, options) == 0xcac && sizeof(World) == 0xcd4 &&
+              sizeof(((World*)0)->track) == content::k_race_track_name_capacity, "World");
 struct CarSetup { uint8_t data[0x8c]; int32_t version, size; char name[0x40]; };
 static_assert(sizeof(CarSetup) == 0xd4, "CarSetup");
 
@@ -798,7 +802,10 @@ static World* s_single_race_world;
 static uint8_t __cdecl GameBeginSingle(World* w) {
     int32_t car_count;                                        // [L+0]
     char track[0x100];                                        // [L+4] (the original's 0x40)
-    if (!MenuDoRaceSetup(P<char>(S_CAR_NAME), track, &w->options)) return 0;
+    if (!MenuDoRaceSetup(P<char>(S_CAR_NAME), track, &w->options)) {
+        content::game_clear_selection();
+        return 0;
+    }
     const char* section = *P<const char*>(S_SECT_GAME);
     car_count = 0;
     OptionsGetI(section, k_car_count, &car_count);
@@ -808,12 +815,42 @@ static uint8_t __cdecl GameBeginSingle(World* w) {
     if (VP_FIX) s_single_race_world = w;                     // (the FIX in LoadRace: a single race's world)
     LoadRaceA(w);
     if (VP_FIX) s_single_race_world = 0;
+    std::string load_error;
+    if (content::game_selection_load_failure(load_error)) {
+        UnloadRaceA(w);
+        content::game_clear_selection();
+        vp_show_content_message("Content Load Failed", load_error.c_str());
+        return 0;
+    }
+    // Bound packages remain fail-closed throughout the load sequence, then
+    // their context is no longer needed after the resource sets are resident.
+    content::game_clear_selection();
     return 1;
 }
 static void fp_begin_single(Footprint& f, World*) { f.replay_only = "the race set-up menu; loads the race"; }
 PORT_FN(0x0040a3f0, "GameBeginSingle", GameBeginSingle, fp_begin_single)
 
-static void __cdecl GameEndSingle(World* w) { UnloadRaceA(w); }
+static uint8_t __cdecl GameBeginSingle_content_adapter(World* w) {
+    typedef uint8_t(__cdecl* Original_t)(World*);
+    Original_t original = (Original_t)port_original(0x0040a3f0);
+    if (!original) return 0;
+    const uint8_t result = original(w);
+    std::string load_error;
+    if (content::game_selection_load_failure(load_error)) {
+        content::game_clear_selection();
+        vp_show_content_message("Content Load Failed", load_error.c_str());
+        return 0;
+    }
+    content::game_clear_selection();
+    return result;
+}
+static void fp_begin_single_adapter(Footprint& f, World*) {
+    f.replay_only = "the community build's original single-race load; reports a selected-package failure afterward";
+}
+PORT_FN_ADAPTER(0x0040a3f0, "GameBeginSingle content adapter", GameBeginSingle_content_adapter,
+                fp_begin_single_adapter, 0xccbd15ab, 7)
+
+static void __cdecl GameEndSingle(World* w) { UnloadRaceA(w); content::game_clear_selection(); }
 static void fp_end_race(Footprint& f, World*) { f.replay_only = "unloads the race"; }
 PORT_FN(0x0040a490, "GameEndSingle", GameEndSingle, fp_end_race)
 
@@ -1009,6 +1046,7 @@ PORT_FN(0x0040a840, "LoadRace", LoadRace, fp_load_race)
 static void __cdecl UnloadRace(World* w) {
     UnloadCarsA(w);
     UnloadTrackA(w);
+    content::game_clear_selection();
 }
 PORT_FN(0x0040a870, "UnloadRace", UnloadRace, fp_end_race)
 

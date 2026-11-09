@@ -32,9 +32,11 @@
 // Left: AddEntry past the capacity does nothing, silently. _UIAddItems gives a CustomWidget's control its item's x, y,
 // width and height (+4..+0x10): every control the game has reads +0xc / +0x10 as a width and height, so it's as meant.
 #include <stdint.h>
+#include <algorithm>
 #include <string.h>
 #include "port.h"
 #include "ui_types.h"
+#include "ui_scale.h"
 #include "ui_string_list_core.h"
 
 namespace {
@@ -789,6 +791,21 @@ PORT_FN(0x004785f0, "_UIAddItems", UIAddItems_n, fp_UIAddItems)
 // UIDoDialog: a window (centred where x / y is -999; a title bar you can drag unless it's full screen or placed), the
 // title, the items, the default focus; run with the dialog's idle function; its exit code
 static int32_t __cdecl UIDoDialog_n(const UIDialog* dlg, int32_t w, int32_t h, int32_t x, int32_t y, int32_t ui3d) {
+    UIDialog centered_dialog{};
+    UIDialogItem centered_items[256];
+    const UIDialog* dialog = dlg;
+    const float previous_font_scale = ui_scale::font_scale;
+    float dialog_scale = (std::max)(1.0f, ui_scale::requested_dialog_font_scale);
+    if (VP_FIX && x == -999 && y == -999 && w == UI_G32(S_SCREEN_W) && h == UI_G32(S_SCREEN_H)) {
+        if (ui_scale::scale_legacy_dialog_items(dlg->items, centered_items, 256, w, h, dialog_scale)) {
+            centered_dialog = *dlg;
+            centered_dialog.items = centered_items;
+            dialog = &centered_dialog;
+        } else {
+            dialog_scale = (std::max)(1.0f, ui_scale::requested_dialog_font_scale);
+        }
+    }
+    ui_scale::font_scale = dialog_scale;
     ccall<void>(F_MouseClear);
     ccall<void>(F_KeyClear);
     const uint32_t saved = UI_GU32(S_DIALOG_IDLE);
@@ -799,7 +816,7 @@ static int32_t __cdecl UIDoDialog_n(const UIDialog* dlg, int32_t w, int32_t h, i
     else framed = 0;
     if (y == -999) y = (UI_G32(S_SCREEN_H) - h) / 2;
     else framed = 0;
-    const volatile UIDialog* d = dlg;
+    const volatile UIDialog* d = dialog;
     WidgetWindow* win = ccall<WidgetWindow*>(F_WidgetCreateWindow, (const char*)d->background, x, y, w, h, ui3d);
     if (framed) {
         void* p = ccall<void*>(F_MemAlloc, 0x340);
@@ -816,7 +833,16 @@ static int32_t __cdecl UIDoDialog_n(const UIDialog* dlg, int32_t w, int32_t h, i
     } else {
         void* p = ccall<void*>(F_MemAlloc, 0x340);
         void* t = 0;
-        if (p) t = tcall<void*>(F_StaticText_ctor, p, (int32_t)0x1d, (int32_t)0x16, (const char*)d->title, (int32_t)0x10);
+        const int32_t title_x = dialog_scale > 1.0f
+                                    ? (w - ui_scale::scale_coord(ui_scale::k_legacy_width, dialog_scale)) / 2 +
+                                          ui_scale::scale_coord(0x1d, dialog_scale)
+                                    : 0x1d;
+        const int32_t title_y = dialog_scale > 1.0f
+                                    ? (h - ui_scale::scale_coord(ui_scale::k_legacy_height, dialog_scale)) / 2 +
+                                          ui_scale::scale_coord(0x16, dialog_scale)
+                                    : 0x16;
+        if (p) t = tcall<void*>(F_StaticText_ctor, p, title_x, title_y,
+                                (const char*)d->title, (int32_t)0x10);
         add(win, t);
     }
     ccall<void>(F_UIAddItems, win, (UIDialogItem*)d->items);
@@ -826,6 +852,7 @@ static int32_t __cdecl UIDoDialog_n(const UIDialog* dlg, int32_t w, int32_t h, i
     const int32_t r = ccall<int32_t>(F_WidgetExecuteWindow, win);
     ccall<void>(F_WidgetDestroyWindow, win);
     UI_GU32(S_DIALOG_IDLE) = saved;
+    ui_scale::font_scale = previous_font_scale;
     return r;
 }
 static void fp_UIDoDialog(Footprint& f, const UIDialog*, int32_t, int32_t, int32_t, int32_t, int32_t) { f.replay_only = "a dialog: runs modally (its own input loop)"; }
@@ -848,10 +875,19 @@ PORT_FN(0x00479170, "dialog_idle_func", dialog_idle_func_n, fp_dialog_idle_func)
 static int32_t __cdecl UIDoMenu_n(const UIMenu* menu) {
     const volatile UIMenu* m = menu;
     const int32_t sh = UI_G32(S_SCREEN_H), sw = UI_G32(S_SCREEN_W);
+    const float previous_font_scale = ui_scale::font_scale;
+    const ui_scale::LegacyViewport viewport = ui_scale::legacy_viewport(sw, sh);
+    const float menu_scale = viewport.scale;
+    const int32_t offset_x = viewport.offset_x;
+    const int32_t offset_y = viewport.offset_y;
+    ui_scale::font_scale = menu_scale;
     WidgetWindow* win = ccall<WidgetWindow*>(F_WidgetCreateWindow, (const char*)m->background, (int32_t)0, (int32_t)0, sw, sh, (int32_t)0);
     void* p = ccall<void*>(F_MemAlloc, 0x340);
     void* t = 0;
-    if (p) t = tcall<void*>(F_StaticText_ctor, p, (int32_t)0x1e, (int32_t)0x18, (const char*)m->title, (int32_t)0x10);
+    if (p) t = tcall<void*>(F_StaticText_ctor, p,
+                            offset_x + ui_scale::scale_coord(0x1e, menu_scale),
+                            offset_y + ui_scale::scale_coord(0x18, menu_scale),
+                            (const char*)m->title, (int32_t)0x10);
     add(win, t);
     if (*(const volatile uint32_t*)m->items != 0) {
         int32_t y = 0x8e;
@@ -860,7 +896,10 @@ static int32_t __cdecl UIDoMenu_n(const UIMenu* menu) {
             void* b = ccall<void*>(F_MemAlloc, 0x290);
             if (b) {
                 const volatile uint32_t* e = (const volatile uint32_t*)((const uint8_t*)m->items + off);
-                tcall<void*>(F_Button_ctor, b, (int32_t)e[1], (int32_t)0x1ef, y, (const char*)(uintptr_t)e[0], (void*)0, (int32_t)2,
+                tcall<void*>(F_Button_ctor, b, (int32_t)e[1],
+                             offset_x + ui_scale::scale_coord(0x1ef, menu_scale),
+                             offset_y + ui_scale::scale_coord(y, menu_scale),
+                             (const char*)(uintptr_t)e[0], (void*)0, (int32_t)2,
                              (uint32_t)1, (uint32_t)0);
                 ((Widget*)b)->vtbl = (const void*)(uintptr_t)VT_MenuButton;
             }
@@ -873,7 +912,10 @@ static int32_t __cdecl UIDoMenu_n(const UIMenu* menu) {
         void* b = ccall<void*>(F_MemAlloc, 0x290);
         if (b) {
             const char* back = xlate(XL_BACK);
-            tcall<void*>(F_Button_ctor, b, (int32_t)-2, (int32_t)0x1ef, (int32_t)0x183, back, (void*)0, (int32_t)2, (uint32_t)1, (uint32_t)0);
+            tcall<void*>(F_Button_ctor, b, (int32_t)-2,
+                         offset_x + ui_scale::scale_coord(0x1ef, menu_scale),
+                         offset_y + ui_scale::scale_coord(0x183, menu_scale),
+                         back, (void*)0, (int32_t)2, (uint32_t)1, (uint32_t)0);
             ((Widget*)b)->vtbl = (const void*)(uintptr_t)VT_MenuButton;
         }
         add(win, b);
@@ -890,6 +932,7 @@ static int32_t __cdecl UIDoMenu_n(const UIMenu* menu) {
     ccall<void>(F_WidgetSetDefault, win, (int32_t)m->default_id);
     const int32_t r = ccall<int32_t>(F_WidgetExecuteWindow, win);
     ccall<void>(F_WidgetDestroyWindow, win);
+    ui_scale::font_scale = previous_font_scale;
     return r;
 }
 static void fp_UIDoMenu(Footprint& f, const UIMenu*) { f.replay_only = "a menu: runs modally (its own input loop)"; }

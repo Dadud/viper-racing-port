@@ -64,12 +64,21 @@ public:
 
     bool add(const char* source) {
         return string_list_add(capacity_, entry_size_, count_, changes_, entries_.data(), source,
-                               [](char* dst, const char* src, uint32_t n) { std::strncpy(dst, src, n); });
+                               [](char* dst, const char* src, uint32_t n) {
+                                   if (n == 0) return;
+                                   if (!src) { dst[0] = 0; return; }
+                                   const size_t length = std::strlen(src);
+                                   const size_t copied = (length < n - 1) ? length : n - 1;
+                                   if (copied) std::memcpy(dst, src, copied);
+                                   dst[copied] = 0;
+                               });
     }
     char* get(int32_t index) { return string_list_get(count_, entries_.data(), index); }
     bool erase(int32_t index) {
         return string_list_delete(count_, changes_, entries_.data(), index,
-                                  [](char* dst, const char* src) { std::strcpy(dst, src); });
+                                  [](char* dst, const char* src) {
+                                      std::memmove(dst, src, std::strlen(src) + 1);
+                                  });
     }
     int32_t count() const { return count_; }
     int32_t capacity() const { return capacity_; }

@@ -2,7 +2,7 @@
 // (physics:ghostcar.obj), rewritten.
 //
 // This is the replay the player watches after a race, not our recorder (replay.cpp). While a race runs,
-// PhysReplayRecordUpdate stores one ReplayFrame every 6 physics ticks (about 10.4 a second) into a 2 MB ring:
+// PhysReplayRecordUpdate stores one ReplayFrame every 6 physics ticks (about 10.4 a second) into the game's replay ring:
 //
 //   ReplayFrame (at g_data + g_frames[i]):
 //     +0x00 u32  telemetry dlong (PhysicsTelemetry +0, the deity's GetDLong)
@@ -15,8 +15,9 @@
 //     +frame_size  the event stream: {u8 type, payload}..., closed by a 0 byte (add_separator_event); at most
 //                0x600 bytes of events a frame (PhysReplayAddEvent drops, and logs every 3 s, past that)
 //
-// g_frames (int[nframes], -1 = empty) holds each frame slot's byte offset; nframes = min(2 MB / frame_size,
-// 18750). Frame slot = (tick / 6) % nframes. The data runs on from frame to frame and wraps to 0 with the frame
+// g_frames (int[nframes], -1 = empty) holds each frame slot's byte offset; nframes is limited by both the replay
+// data budget and the build's frame cap. Retail and official v1.1 use 2 MB; community 1.2.4+ raised it to 32 MB.
+// Frame slot = (tick / 6) % nframes. The data runs on from frame to frame and wraps to 0 with the frame
 // index, or when fewer than 0x600 bytes are left (advance_replay_frame). SealRecording (after the race) closes
 // the last frame and, if the ring wrapped, walks back to the oldest frame still intact: g_num_frames and the
 // start time. Playback (PhysReplayPlayUpdate, physics thread) moves each dynamic phob between the frame at the
@@ -61,6 +62,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "port.h"
+#include "viperport.h"
 #include "x87.h"
 #include "phys_types.h"
 
@@ -132,7 +134,7 @@ static inline int32_t packet_offset(const void* o) { return (int32_t)((const Pho
 #define g_max_frames      (*(int32_t*)0x00521908)          // 18750 ($E59)
 #define g_frames          (*(int32_t**)0x00521918)         // per slot, the frame's byte offset in g_data; -1 empty
 #define g_ev_cursor       (*(int32_t*)0x00521920)          // where the next event goes, from the frame's start
-#define g_data            (*(uint8_t**)0x00521924)         // 2 MB
+#define g_data            (*(uint8_t**)0x00521924)         // replay ring (2 MB retail; 32 MB community 1.2.4+)
 #define g_handlers        ((void**)0x00521930)             // 8 event handlers, by type
 #define g_start_time      (*(int32_t*)0x00521950)          // the physics tick of the first frame
 #define g_wrap_mark       (*(int32_t*)0x00521954)          // g_wraps when the data last ran out of room; -1
@@ -149,7 +151,12 @@ static inline int32_t packet_offset(const void* o) { return (int32_t)((const Pho
 #define g_ghost_record    (*(uint8_t**)0x00505bc8)         // GhostGetData's record
 #define g_sound_manager   (*(uint8_t**)0x004f5708)
 static const uint32_t REPL_COOKIE = 0x5245504c;              // 'LPER'
-static const int32_t DATA_BYTES = 0x200000;
+static const int32_t DATA_BYTES_LEGACY = 0x200000;
+static const int32_t DATA_BYTES_COMMUNITY = 0x2000000;
+static int32_t replay_data_bytes_for_build(bool community_124) {
+    return community_124 ? DATA_BYTES_COMMUNITY : DATA_BYTES_LEGACY;
+}
+static int32_t replay_data_bytes() { return replay_data_bytes_for_build(build_has_community_124_features()); }
 
 // the game's strings (the original passes these addresses)
 static const char* const S_PHYSREPLAY = (const char*)0x004ed1d0;     // "PhysReplay"
@@ -449,7 +456,7 @@ static uint8_t __cdecl PhysReplayLoad_rw(int32_t fd) {
     if ((uint32_t)h[0] != REPL_COOKIE) { LogReport(S_COOKIE); return 0; }
     if (h[1] != 6) { LogReport(S_VERSION, h[1], 6); return 0; }
     if (h[5] != g_nframes) { LogReport(S_IDX_METHOD); return 0; }
-    if (h[6] > DATA_BYTES) { LogReport(S_DATASIZE); return 0; }
+    if (h[6] > replay_data_bytes()) { LogReport(S_DATASIZE); return 0; }
     g_start_time = h[2];
     g_num_frames = h[3];
     const int32_t last = h[3] - 1;
@@ -552,10 +559,10 @@ static void fp_play_update(Footprint& f, PhobRoot** phobs, int32_t n) {
     const int32_t fr = (g_physics_tick / 6) % g_nframes;
     if (g_last_frame == fr) return;
     const int32_t off = g_frames[fr];
-    if (off < 0 || off >= DATA_BYTES) { f.replay_only = "a frame outside the buffer"; return; }
+    if (off < 0 || off >= replay_data_bytes()) { f.replay_only = "a frame outside the buffer"; return; }
     const uint8_t* ev = g_data + off + g_frame_size;
     for (int k = 0; k < 4096; k++) {
-        if (ev < g_data || ev >= g_data + DATA_BYTES) { f.replay_only = "events outside the buffer"; return; }
+        if (ev < g_data || ev >= g_data + replay_data_bytes()) { f.replay_only = "events outside the buffer"; return; }
         if (*ev >= 8) return;
         const uint32_t h = (uint32_t)(uintptr_t)g_handlers[*ev];
         if (!h) return;
@@ -666,14 +673,15 @@ static void __cdecl PhysReplayBGBegin_rw() {
 static void fp_statics_only(Footprint& f) { fp_statics(f); }
 PORT_FN(0x0042d350, "PhysReplayBGBegin", PhysReplayBGBegin_rw, fp_statics_only)
 
-// ---- PhysReplayDoneCreating (0x42d3a0): the 2 MB buffer; the frame size (+0xb for the telemetry); the frame table ----
+// ---- PhysReplayDoneCreating (0x42d3a0): the build-sized data buffer; frame size (+0xb); frame table ------------
 static void __cdecl PhysReplayDoneCreating_rw() {
-    uint8_t* data = (uint8_t*)MemAlloc(DATA_BYTES);
+    const int32_t data_bytes = replay_data_bytes();
+    uint8_t* data = (uint8_t*)MemAlloc(data_bytes);
     const int32_t fs = g_frame_size + 0xb;
     g_data = data;
     g_frame_size = fs;
     g_ev_cursor = fs;
-    int32_t q = DATA_BYTES / fs;
+    int32_t q = data_bytes / fs;
     const int32_t cap = g_max_frames;
     if (!(q < cap)) q = cap;
     const uint32_t bytes = (uint32_t)q * 4u;
@@ -844,7 +852,7 @@ static void __cdecl advance_replay_frame_rw(int32_t f) {
     add_separator_event();
     int32_t* slot = &g_frames[g_cur_frame];
     const int32_t next = *slot + g_ev_cursor;
-    const bool room = (int32_t)((uint32_t)next + 0x600u) < DATA_BYTES;
+    const bool room = (int32_t)((uint32_t)next + 0x600u) < replay_data_bytes();
     if (f != 0 || g_cur_frame == -1) bl = 0;
     if (!bl && room) {
         g_frames[f] = next;

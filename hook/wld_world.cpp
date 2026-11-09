@@ -1558,13 +1558,15 @@ static int __cdecl obj_sort_f_rw(const void* a, const void* b) {
 static void fp_sort_f(Footprint&, const void*, const void*) {}
 PORT_FN(0x00463f60, "obj_sort_f", obj_sort_f_rw, fp_sort_f)
 
-// ==== should_draw_mirror (0x463f90): the mirror option on and the camera 0, 1 or 2 ===============================================
+// ==== should_draw_mirror (0x463f90): the mirror option and a supported view ========================================
+static uint8_t mirror_visible_for_camera(bool enabled, int32_t camera, bool community_124) {
+    if (!enabled) return 0;
+    if (community_124) return camera >= 0 && camera <= 7;
+    return camera == 0 || camera == 1 || camera == 2;
+}
 static uint8_t __cdecl should_draw_mirror_rw() {
-    if (g_opt_mirror > 0) {
-        const int32_t c = g_camera_type;
-        if (c == 0 || c == 2 || c == 1) return 1;
-    }
-    return 0;
+    // Community 1.2.4 enabled the configured rear-view mirror in all eight F1-F8 camera modes.
+    return mirror_visible_for_camera(g_opt_mirror > 0, g_camera_type, build_has_community_124_features());
 }
 PORT_FN(0x00463f90, "should_draw_mirror", should_draw_mirror_rw, fp_none)
 

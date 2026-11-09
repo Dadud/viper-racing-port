@@ -1,9 +1,8 @@
 // world_wld_terrain.cpp -- the W1 terrain queries, the BPP / BSP trees and the track loading (hook/wld_terrain.cpp)
 // against the originals, outside the game (docs/PORTING.md, checking step 3).
 //
-//   build (x86 tools, from the repo root):
-//     cl /nologo /O2 /arch:IA32 /fp:precise /MT /W3 /EHsc /std:c++17 /FC test\world_wld_terrain.cpp
-//        /Fo<dir>\ /Fe<dir>\world_wld_terrain.exe /link /BASE:0x10000000 /DYNAMICBASE:NO /FIXED /MACHINE:X86
+//   build/run (x86 tools, from the repo root):
+//     powershell -ExecutionPolicy Bypass -File tools\test_native_terrain_parity.ps1
 //   run:   world_wld_terrain.exe [queries per track] [seed] [game dir]
 //          (the game dir defaults to ..\game-files\installs\v1.0-RC beside the repo; it is only read)
 //
@@ -35,7 +34,9 @@
 #include <string.h>
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
+#include <direct.h>
 #if defined(__GNUC__) && !defined(__clang__)
 #include "vp_seh.h"                           // vp_try: the GCC stand-in for __try / __except
 #endif
@@ -64,6 +65,7 @@ void Footprint::add(void* p, uint32_t bytes, const char* what) { if (n < MAX) r[
 void Footprint::object(void* obj, const char* what) { add(obj, 4, what); }
 
 #include "../hook/wld_terrain.cpp"
+#include "../native/native_track_info.h"
 
 // ---- random values -------------------------------------------------------------------------------------------------
 static uint32_t g_rng = 0x2545f491u;
@@ -298,6 +300,8 @@ static Tally* tally(const char* name) {
     return &g_tally[g_ntally++];
 }
 static bool g_chain;                                             // this round: chain mode
+static std::string g_native_parity_corpus;
+static int g_native_parity_corpus_failures;
 static FpMode pick_fp() { uint32_t k = rnd() % 4; return k == 0 ? FP_MAIN : k == 1 ? FP_PHYS_EXC : FP_PHYS; }
 
 // one check: 1 differs
@@ -652,6 +656,130 @@ static void bpp_queries(int nq) {
     }
 }
 
+// Compare the portable host-owned traversal with the executable's actual BPPHit
+// against the same tree and query segment. This is separate from rewrite checks:
+// it reports parity without changing the original-vs-rewrite harness results.
+static bool native_track_from_loaded_tree(native_track::TrackSurface& out) {
+    if (!g_hdr || g_hdr->n_tris <= 0 || g_hdr->n_nodes <= 0 || !g_hdr->root) return false;
+    const ptrdiff_t root = g_hdr->root - g_hdr->nodes;
+    if (root < 0 || root >= g_hdr->n_nodes) return false;
+    native_track::TrackSurface candidate;
+    candidate.source_version = 2;
+    candidate.root = (uint32_t)root;
+    candidate.triangles.resize((size_t)g_hdr->n_tris);
+    candidate.nodes.resize((size_t)g_hdr->n_nodes);
+    for (int32_t i = 0; i < g_hdr->n_tris; ++i) {
+        const bpp_tri& src = g_hdr->tris[i];
+        native_track::Triangle& dst = candidate.triangles[(size_t)i];
+        dst.normal[0] = src.n.x; dst.normal[1] = src.n.y; dst.normal[2] = src.n.z;
+        dst.distance = src.d;
+        for (int k = 0; k < 3; ++k) {
+            dst.vertices[(size_t)k].position[0] = src.v[k].x;
+            dst.vertices[(size_t)k].position[1] = src.v[k].y;
+            dst.vertices[(size_t)k].position[2] = src.v[k].z;
+        }
+        dst.surface = src.surface;
+    }
+    for (int32_t i = 0; i < g_hdr->n_nodes; ++i) {
+        const bpp_node& src = g_hdr->nodes[i];
+        native_track::Node& dst = candidate.nodes[(size_t)i];
+        dst.a = src.a; dst.b = src.b; dst.c = src.c;
+        dst.triangle_le = src.tri_le; dst.triangle_gt = src.tri_gt;
+        dst.child_le = src.le ? (int32_t)(src.le - g_hdr->nodes) : -1;
+        dst.child_gt = src.gt ? (int32_t)(src.gt - g_hdr->nodes) : -1;
+    }
+    out = std::move(candidate);
+    return true;
+}
+
+struct NativeParityRecord {
+    uint32_t start[3], end[3], precision, found, triangle, point[3];
+};
+static_assert(sizeof(NativeParityRecord) == 48, "native parity corpus record layout");
+
+static void native_segment_parity(const native_track::TrackSurface& track, const Track& archive,
+                                  int queries, const char* track_name) {
+    long both_miss = 0, both_hit = 0, hit_disagreements = 0;
+    long triangle_disagreements = 0, point_disagreements = 0;
+    long nonfinite_skipped = 0;
+    std::vector<NativeParityRecord> corpus;
+    if (!g_native_parity_corpus.empty()) corpus.reserve((size_t)queries);
+    for (int q = 0; q < queries; ++q) {
+        P3 start, end, original_point = {0, 0, 0};
+        rsegment(&start, &end);
+        if (!isfinite(start.x) || !isfinite(start.y) || !isfinite(start.z) ||
+            !isfinite(end.x) || !isfinite(end.y) || !isfinite(end.z)) {
+            ++nonfinite_skipped;
+            continue;
+        }
+        NativeParityRecord record = {};
+        record.start[0] = ubits(start.x); record.start[1] = ubits(start.y); record.start[2] = ubits(start.z);
+        record.end[0] = ubits(end.x); record.end[1] = ubits(end.y); record.end[2] = ubits(end.z);
+        record.precision = (q & 1) ? 24u : 53u;
+        unsigned saved_control = 0, active_control = 0;
+        _controlfp_s(&saved_control, (q & 1) ? _PC_24 : _PC_53, _MCW_PC);
+        bpp_tri* original = ORIG(bpp_tri*(__cdecl*)(P3*, P3*, P3*), 0x46d0c0)(&start, &end, &original_point);
+        record.found = original != 0;
+        if (original) {
+            record.triangle = (uint32_t)(original - g_hdr->tris);
+            record.point[0] = ubits(original_point.x); record.point[1] = ubits(original_point.y);
+            record.point[2] = ubits(original_point.z);
+        }
+        if (!g_native_parity_corpus.empty()) corpus.push_back(record);
+        native_track::SegmentHit native_hit{};
+        const bool native_found = native_track::intersect_segment(
+            track, {{start.x, start.y, start.z}}, {{end.x, end.y, end.z}},
+            (q & 1) ? native_track::X87Precision::bits24 : native_track::X87Precision::bits53, native_hit);
+        _controlfp_s(&active_control, saved_control, _MCW_PC);
+        if (!original && !native_found) { ++both_miss; continue; }
+        if (!!original != native_found) {
+            if (hit_disagreements++ < 4)
+                printf("  NATIVE PARITY hit mismatch q=%d original=%s native=%s start=(%.7g %.7g %.7g) end=(%.7g %.7g %.7g)\n",
+                       q, original ? "hit" : "miss", native_found ? "hit" : "miss",
+                       start.x, start.y, start.z, end.x, end.y, end.z);
+            continue;
+        }
+        ++both_hit;
+        const uint32_t original_index = (uint32_t)(original - g_hdr->tris);
+        if (original_index != native_hit.triangle) {
+            if (triangle_disagreements++ < 4)
+                printf("  NATIVE PARITY triangle mismatch q=%d original=%u native=%u\n",
+                       q, original_index, native_hit.triangle);
+        }
+        if (ubits(original_point.x) != ubits(native_hit.point[0]) ||
+            ubits(original_point.y) != ubits(native_hit.point[1]) ||
+            ubits(original_point.z) != ubits(native_hit.point[2])) {
+            if (point_disagreements++ < 4)
+                printf("  NATIVE PARITY point mismatch q=%d original=(%08x %08x %08x) native=(%08x %08x %08x)\n",
+                       q, ubits(original_point.x), ubits(original_point.y), ubits(original_point.z),
+                       ubits(native_hit.point[0]), ubits(native_hit.point[1]), ubits(native_hit.point[2]));
+        }
+    }
+    printf("  native segment parity: %d queries, %ld non-finite skipped, %ld both miss, %ld both hit, %ld hit mismatches, %ld triangle mismatches, %ld point mismatches\n",
+           queries, nonfinite_skipped, both_miss, both_hit, hit_disagreements, triangle_disagreements, point_disagreements);
+    if (!g_native_parity_corpus.empty()) {
+        CreateDirectoryA(g_native_parity_corpus.c_str(), 0);
+        char output[MAX_PATH];
+        const char* base = strrchr(track_name, '\\');
+        if (!base) base = strrchr(track_name, '/');
+        base = base ? base + 1 : track_name;
+        _snprintf(output, sizeof output, "%s\\%s.vptc", g_native_parity_corpus.c_str(), base);
+        FILE* f = fopen(output, "wb");
+        if (f) {
+            const uint32_t header[] = {0x43545056u, 1u, (uint32_t)archive.bpp.size(), (uint32_t)corpus.size()};
+            const bool ok = fwrite(header, sizeof header, 1, f) == 1 &&
+                fwrite(archive.bpp.data(), 1, archive.bpp.size(), f) == archive.bpp.size() &&
+                (corpus.empty() || fwrite(corpus.data(), sizeof corpus[0], corpus.size(), f) == corpus.size());
+            fclose(f);
+            if (!ok) ++g_native_parity_corpus_failures;
+            printf("  x86 reference corpus %s: %s (%zu finite queries)\n", output, ok ? "written" : "write failed", corpus.size());
+        } else {
+            ++g_native_parity_corpus_failures;
+            printf("  x86 reference corpus %s: could not open output\n", output);
+        }
+    }
+}
+
 // ---- loaders -----------------------------------------------------------------------------------------------------------
 static void th_bpp_load(bool o) { if (o) ORIG(void(__cdecl*)(const char*), 0x46d070)(Ar.name); else BPPLoadRw(Ar.name); }
 static void th_bpp_load_file(bool o) {
@@ -962,6 +1090,7 @@ int main(int argc, char** argv) {
     std::string game;
     if (s) { *s = 0; game = std::string(exe) + "\\..\\game-files\\installs\\v1.0-RC"; strcat(exe, "\\out\\race_v10.exe"); }
     if (argc > 3) game = argv[3];
+    if (argc > 4) g_native_parity_corpus = argv[4];
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (!load_race_exe(exe)) return 2;
     patch_jmp(0x004cf730, (void*)&stub_crt_fatal);              // __amsg_exit
@@ -1019,6 +1148,11 @@ int main(int argc, char** argv) {
                     g_box[4] = std::min(g_box[4], v.y); g_box[5] = std::max(g_box[5], v.y);
                 }
             std::vector<uint8_t> tree_before(g_bppbuf, g_bppbuf + t.bpp.size());
+            if (chain == 0) {
+                native_track::TrackSurface native_track;
+                if (native_track_from_loaded_tree(native_track)) native_segment_parity(native_track, t, nq, path.c_str());
+                else printf("  native segment parity: skipped (could not copy loaded BPP tree)\n");
+            }
             long bad0 = 0;
             for (int i = 0; i < g_ntally; i++) bad0 += g_tally[i].bad;
             bpp_queries(nq);
@@ -1072,6 +1206,10 @@ int main(int argc, char** argv) {
         const Tally& t = g_tally[i];
         printf("  %-44s %9ld checks %8ld returned nonzero %6ld faulted: %s\n", t.name, t.n, t.hits, t.faults, t.bad ? "DIFFERS" : "identical");
         failed += t.bad != 0;
+    }
+    if (g_native_parity_corpus_failures) {
+        printf("native parity corpus write failures: %d\n", g_native_parity_corpus_failures);
+        failed++;
     }
     printf("%s\n", failed ? "FAILED" : "all identical");
     return failed ? 1 : 0;

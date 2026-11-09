@@ -1,0 +1,25 @@
+name: Native x64 menu smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 development files
+        run: sudo apt-get update && sudo apt-get install --yes libsdl2-dev
+      - name: Run portable catalog and menu tests
+        run: bash tools/test_portable.sh
+      - name: Build native Linux x64 menu
+        run: bash native/build_linux_x64.sh
+      - name: Smoke test the SDL event loop without a display
+        env:
+          SDL_VIDEODRIVER: dummy
+        run: |
+          game_dir="$RUNNER_TEMP/viper-game"
+          mkdir -p "$game_dir/Config/ContentLibrary" "$game_dir/Data"
+          out/native-linux-x64/viper-native --game-dir "$game_dir" --smoke-test

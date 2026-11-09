@@ -80,6 +80,8 @@ void logf(const char* fmt, ...) {
 uint32_t A(uint32_t v10) { return v10; }
 bool have(uint32_t) { return true; }
 bool build_is_v10() { return true; }
+static bool g_test_community_camera_policy;
+bool build_has_community_124_features() { return g_test_community_camera_policy; }
 
 void Footprint::add(void* p, uint32_t bytes, const char* what) {
     if (n < MAX) r[n++] = {p, bytes, what};
@@ -1385,6 +1387,11 @@ int main(int argc, char** argv) {
 #endif
     if (!GetEnvironmentVariableA("VP_WORLD_CHILD", 0, 0)) return relaunch();
     setvbuf(stdout, 0, _IONBF, 0);
+    if (!mirror_visible_for_camera(true, 7, true) || mirror_visible_for_camera(true, 8, true) ||
+        mirror_visible_for_camera(true, 3, false) || mirror_visible_for_camera(false, 0, true)) {
+        puts("FAIL mirror camera range does not match the retail/community build policy");
+        return 1;
+    }
     int worlds = argc > 1 ? atoi(argv[1]) : 300;
     if (argc > 2) g_rng = ((uint32_t)strtoul(argv[2], 0, 0) * 2654435761u) | 1;
     char dir[MAX_PATH];
@@ -1397,6 +1404,28 @@ int main(int argc, char** argv) {
     char* s = strstr(exe, "\\test\\world_wld_world.cpp");
     if (s) strcpy(s, "\\out\\race_v10.exe");
     if (!load_race_exe(exe)) return 2;
+    const int32_t saved_mirror = g_opt_mirror;
+    const int32_t saved_camera = g_camera_type;
+    bool mirror_policy_ok = true;
+    for (int policy = 0; policy < 2; ++policy) {
+        g_test_community_camera_policy = policy != 0;
+        for (int camera = -2; camera <= 10; ++camera) {
+            g_opt_mirror = 1;
+            g_camera_type = camera;
+            const bool expected = policy ? camera >= 0 && camera <= 7 : camera >= 0 && camera <= 2;
+            if ((should_draw_mirror_rw() != 0) != expected) mirror_policy_ok = false;
+            g_opt_mirror = 0;
+            if (should_draw_mirror_rw() != 0) mirror_policy_ok = false;
+        }
+    }
+    g_opt_mirror = saved_mirror;
+    g_camera_type = saved_camera;
+    g_test_community_camera_policy = false;
+    if (!mirror_policy_ok) {
+        puts("FAIL should_draw_mirror does not match retail/community camera policy");
+        return 1;
+    }
+    puts("mirror policy passed: every camera index -2..10 with option on/off for retail and community builds");
     g_vrmod = getenv("VP_VRMOD") && atoi(getenv("VP_VRMOD"));
     if (g_vrmod) puts("vrmod's hornball: create_ball's mass and radius random");
     install_stubs();

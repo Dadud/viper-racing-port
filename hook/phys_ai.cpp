@@ -740,17 +740,22 @@ static void fp_dash_key(Footprint& f, uint16_t key) {
 }
 PORT_FN(0x0041c660, "AIDashboardKey", AIDashboardKey, fp_dash_key)
 
-// AIResetCars (0x41d1a0) and AIBGUpdate (0x41d1c0): every registered car's position to the Proxer; AIBGUpdate then
-// updates the Proxer, inside the profiler's "AIBGUpdate" bracket
+// AIResetCars (0x41d1a0) and AIBGUpdate (0x41d1c0): every registered car's position to the Proxer, then sort the
+// Proxer tables. The 1.2.4 patch added the update after the reset loop so AI Reset immediately refreshes proximity.
 static void __cdecl AIResetCars() {
     for (AICarInfo** p = g_ai_cars; p < g_ai_cars + 16; p++)
         if (*p) AICarInfo_UpdatePos_o(*p, 0);
+    Proxer_update_o(*g_proxer, 0);
 }
 static void fp_all_cars(Footprint& f) {
     for (int i = 0; i < 16; i++)
         if (g_ai_cars[i]) fp_info_state(f, g_ai_cars[i]);
 }
-PORT_FN(0x0041d1a0, "AIResetCars", AIResetCars, fp_all_cars)
+static void fp_reset_cars(Footprint& f) {
+    fp_all_cars(f);
+    fp_proxer_all(f, *g_proxer);
+}
+PORT_FN(0x0041d1a0, "AIResetCars", AIResetCars, fp_reset_cars)
 
 static void __cdecl AIBGUpdate() {
     (*i_pr_overhead_begin)();

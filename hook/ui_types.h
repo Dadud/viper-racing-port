@@ -22,6 +22,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include "viperport.h"
 #include <string.h>
 #include "port.h"
 
@@ -430,28 +431,28 @@ enum : uint32_t {
 };
 
 // ---- memory ------------------------------------------------------------------------------------------------------------
-#define UI_G8(a) (*(volatile uint8_t*)(uintptr_t)(a))
-#define UI_G16(a) (*(volatile uint16_t*)(uintptr_t)(a))
-#define UI_G32(a) (*(volatile int32_t*)(uintptr_t)(a))
-#define UI_GU32(a) (*(volatile uint32_t*)(uintptr_t)(a))
-#define UI_GF(a) (*(volatile float*)(uintptr_t)(a))
-#define UI_GP(T, a) (*(T* volatile*)(uintptr_t)(a))
+#define UI_G8(a) (*(volatile uint8_t*)(uintptr_t)A(a))
+#define UI_G16(a) (*(volatile uint16_t*)(uintptr_t)A(a))
+#define UI_G32(a) (*(volatile int32_t*)(uintptr_t)A(a))
+#define UI_GU32(a) (*(volatile uint32_t*)(uintptr_t)A(a))
+#define UI_GF(a) (*(volatile float*)(uintptr_t)A(a))
+#define UI_GP(T, a) (*(T* volatile*)(uintptr_t)A(a))
 static __forceinline UIStyle* ui_style_at(int32_t i) { return (UIStyle*)(uintptr_t)(S_STYLES + (uint32_t)i * 0x30u); }
 
 // a virtual call: slot at byte `off` of obj's vtable, received as __thiscall (so a hooked rewrite is what runs)
-template <typename R, typename... A> static __forceinline R vcall(const void* obj, uint32_t off, A... a) {
-    typedef R(__fastcall * Fn)(const void*, Edx, A...);
+template <typename R, typename... Args> static __forceinline R vcall(const void* obj, uint32_t off, Args... a) {
+    typedef R(__fastcall * Fn)(const void*, Edx, Args...);
     return ((Fn)(*(void* const* volatile*)obj)[off / 4])(obj, 0, a...);
 }
 // a __thiscall game function by address
-template <typename R, typename... A> static __forceinline R tcall(uint32_t fn, const void* self, A... a) {
-    typedef R(__fastcall * Fn)(const void*, Edx, A...);
-    return ((Fn)(uintptr_t)fn)(self, 0, a...);
+template <typename R, typename... Args> static __forceinline R tcall(uint32_t fn, const void* self, Args... a) {
+    typedef R(__fastcall * Fn)(const void*, Edx, Args...);
+    return ((Fn)(uintptr_t)A(fn))(self, 0, a...);
 }
 // a __cdecl game function by address
-template <typename R, typename... A> static __forceinline R ccall(uint32_t fn, A... a) {
-    typedef R(__cdecl * Fn)(A...);
-    return ((Fn)(uintptr_t)fn)(a...);
+template <typename R, typename... Args> static __forceinline R ccall(uint32_t fn, Args... a) {
+    typedef R(__cdecl * Fn)(Args...);
+    return ((Fn)(uintptr_t)A(fn))(a...);
 }
 
 // The compiler's inline string code, as the original runs it: strlen is `repne scasb`; strcpy copies strlen + 1

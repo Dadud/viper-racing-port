@@ -46,6 +46,7 @@
 #include "viperport.h"
 #include "port.h"
 #include "x87.h"
+#include "ui_scale.h"
 
 #define D(x) ((double)(x))                          // a register value (x87.h)
 #define FB(b) __builtin_bit_cast(float, (uint32_t)(b))   // a float constant from its bits
@@ -1915,6 +1916,49 @@ static void __cdecl gxForgetStamp_n(gxStamp* s) {
 static void fp_gxForgetStamp(Footprint& f, gxStamp*) { f.replay_only = "releases a resource"; }
 PORT_FN(0x004535d0, "gxForgetStamp", gxForgetStamp_n, fp_gxForgetStamp)
 
+static void gx_draw_stamp_scaled(const StampHdr* s, int32_t x, int32_t y, int32_t frame, const void* pal, float scale) {
+    if (!s || !(s->count > frame) || !(scale > 1.0f)) return;
+    const int32_t x0 = x - ui_scale::scale_coord(s->hotx, scale);
+    const int32_t y0 = y - ui_scale::scale_coord(s->hoty, scale);
+    const uint8_t* p16 = pal ? (CUR->format == 3 ? (const uint8_t*)pal : (const uint8_t*)pal + 0x200)
+                             : (CUR->format == 3 ? (const uint8_t*)s + 0x14 : (const uint8_t*)s + 0x214);
+    for (int32_t row = 0; row < s->h; ++row) {
+        const int32_t top = y0 + ui_scale::scale_coord(row, scale);
+        const int32_t bottom = y0 + ui_scale::scale_coord(row + 1, scale);
+        const bool row_visible = bottom > CUR->cy0 && top < CUR->cy1;
+        const uint8_t* rle = s->rows[imul(s->h, frame) + row];
+        int32_t col = 0;
+        while (col < s->w) {
+            int32_t run = *rle++;
+            const bool opaque = (run & 0x80) != 0;
+            if (opaque) run &= 0x7f;
+            if (run > s->w - col) run = s->w - col;
+            if (run <= 0) break;
+            if (opaque) {
+                for (int32_t j = 0; j < run; ++j) {
+                    const uint8_t index = *rle++;
+                    const int32_t source_x = col + j;
+                    const int32_t left = x0 + ui_scale::scale_coord(source_x, scale);
+                    const int32_t right = x0 + ui_scale::scale_coord(source_x + 1, scale);
+                    if (!row_visible || right <= CUR->cx0 || left >= CUR->cx1) continue;
+                    const uint16_t color = r16(p16 + index * 2);
+                    const int32_t y_begin = top < CUR->cy0 ? CUR->cy0 : top;
+                    const int32_t y_end = bottom > CUR->cy1 ? CUR->cy1 : bottom;
+                    const int32_t x_begin = left < CUR->cx0 ? CUR->cx0 : left;
+                    const int32_t x_end = right > CUR->cx1 ? CUR->cx1 : right;
+                    for (int32_t yy = y_begin; yy < y_end; ++yy) {
+                        uint8_t* dst = (uint8_t*)calc_address_16_o(CUR, x_begin, yy);
+                        for (int32_t xx = x_begin; xx < x_end; ++xx, dst += 2) w16(dst, color);
+                    }
+                }
+            } else {
+                rle += run;
+            }
+            col += run;
+        }
+    }
+}
+
 // gxDrawStamp: one frame at (x, y) less the hot spot, clipped to the current canvas; the palette is the caller's
 // (its 565 half unless the canvas is 555) or the stamp's own. 16-bit canvases only.
 static void __cdecl gxDrawStamp_n(const gxStamp* stamp, int32_t x, int32_t y, int32_t frame, const void* pal) {
@@ -2226,6 +2270,15 @@ typedef int32_t(__cdecl* FontInt_t)(const FontHdr*);
 static const FontInt_t gxFontAscent_o = (FontInt_t)0x004540f0, gxFontDescent_o = (FontInt_t)0x00454130;
 typedef int32_t(__cdecl* FontWidth_t)(const FontHdr*, const char*);
 static const FontWidth_t gxFontStringWidth_o = (FontWidth_t)0x00454040;
+static int32_t font_ascent_raw(const FontHdr* f) {
+    if (!f) return gxTextHeight_o();
+    struct { int32_t y, x; } hotspot = {0, 0};
+    gxStampHotSpot_o(f->stamp, &hotspot.x, &hotspot.y);
+    return hotspot.y;
+}
+static int32_t font_descent_raw(const FontHdr* f) {
+    return f ? gxStampHeight_o(f->stamp) - font_ascent_raw(f) : 0;
+}
 
 // gxFontGet: a stamp whose frames' user data are (character, x offset, a, b); advance = a + b + x offset
 static FontHdr* __cdecl gxFontGet_n(const char* name) {
@@ -2265,27 +2318,27 @@ static void fp_gxFontForget(Footprint& f, FontHdr*) { f.replay_only = "frees"; }
 PORT_FN(0x00454020, "gxFontForget", gxFontForget_n, fp_gxFontForget)
 
 static int32_t __cdecl gxFontStringWidth_n(const FontHdr* f, const char* s) {
-    if (!f) return gxTextWidth_o(s);
+    if (!f) return ui_scale::scale_coord(gxTextWidth_o(s), ui_scale::font_scale);
     int32_t w = 0;
     if (*s == 0) return 0;
     do {
         w += f->adv[(uint8_t)*s++];
     } while (*s != 0);
-    return w;
+    return ui_scale::scale_coord(w, ui_scale::font_scale);
 }
 static void fp_font_str(Footprint&, const FontHdr*, const char*) {}
 PORT_FN(0x00454040, "gxFontStringWidth", gxFontStringWidth_n, fp_font_str)
 
 static int32_t __cdecl gxFontStringWidthN_n(const FontHdr* f, const char* s, int32_t n) {
-    if (!f) return gxTextWidth_o(s);
+    if (!f) return ui_scale::scale_coord(gxTextWidth_o(s), ui_scale::font_scale);
     int32_t w = 0;
     if (*s == 0) return 0;
     do {
-        if (n <= 0) return w;
+        if (n <= 0) return ui_scale::scale_coord(w, ui_scale::font_scale);
         n--;
         w += f->adv[(uint8_t)*s++];
     } while (*s != 0);
-    return w;
+    return ui_scale::scale_coord(w, ui_scale::font_scale);
 }
 static void fp_font_str_n(Footprint&, const FontHdr*, const char*, int32_t) {}
 PORT_FN(0x00454080, "gxFontStringWidthN", gxFontStringWidthN_n, fp_font_str_n)
@@ -2299,26 +2352,20 @@ PORT_FN(0x004540d0, "gxFontMaxCharWidth", gxFontMaxCharWidth_n, fp_font)
 
 // the ascent is the stamp's hot spot y, the descent its height less that
 static int32_t __cdecl gxFontAscent_n(const FontHdr* f) {
-    if (!f) return gxTextHeight_o();
-    struct { int32_t y, x; } L;
-    L.y = 0;
-    gxStampHotSpot_o(f->stamp, &L.x, &L.y);
-    return L.y;
+    if (!f) return ui_scale::scale_coord(gxTextHeight_o(), ui_scale::font_scale);
+    return ui_scale::scale_coord(font_ascent_raw(f), ui_scale::font_scale);
 }
 PORT_FN(0x004540f0, "gxFontAscent", gxFontAscent_n, fp_font)
 
 static int32_t __cdecl gxFontDescent_n(const FontHdr* f) {
     if (!f) return 0;
-    struct { int32_t y, x; } L;
-    L.y = 0;
-    gxStampHotSpot_o(f->stamp, &L.x, &L.y);
-    return gxStampHeight_o(f->stamp) - L.y;
+    return ui_scale::scale_coord(font_descent_raw(f), ui_scale::font_scale);
 }
 PORT_FN(0x00454130, "gxFontDescent", gxFontDescent_n, fp_font)
 
 static int32_t __cdecl gxFontHeight_n(const FontHdr* f) {
-    const int32_t d = gxFontDescent_o(f);
-    return gxFontAscent_o(f) + d;
+    if (!f) return ui_scale::scale_coord(gxTextHeight_o(), ui_scale::font_scale);
+    return ui_scale::scale_coord(font_ascent_raw(f) + font_descent_raw(f), ui_scale::font_scale);
 }
 PORT_FN(0x00454180, "gxFontHeight", gxFontHeight_n, fp_font)
 
@@ -2337,18 +2384,25 @@ static const Sprintf_t game_sprintf = (Sprintf_t)0x004cf0a0;
 static void __cdecl gxFontPrintf_n(const FontHdr* f, const void* pal, uint32_t flags, int32_t x, int32_t y, const char* fmt, FONT_VA) {
     char buf[0x1000];
     game_vsprintf(buf, fmt, (va_list)&a0);
-    const int32_t w = gxFontStringWidth_o(f, buf);
+    const float scale = f ? ui_scale::font_scale : 1.0f;
+    int32_t raw_width = 0;
+    if (f) {
+        for (const uint8_t* c = (const uint8_t*)buf; *c; ++c) raw_width += f->adv[*c];
+    } else {
+        raw_width = gxTextWidth_o(buf);
+    }
+    const int32_t w = ui_scale::scale_coord(raw_width, scale);
     int32_t px;
     if (flags & 2) px = x - w;
     else if (flags & 4) px = x - w / 2;
     else px = x;
     int32_t py;
-    if (flags & 8) py = y + gxFontAscent_o(f);
+    if (flags & 8) py = y + ui_scale::scale_coord(font_ascent_raw(f), scale);
     else if (flags & 0x10) {
-        const int32_t a = gxFontAscent_o(f);
-        const int32_t d = gxFontDescent_o(f);
+        const int32_t a = ui_scale::scale_coord(font_ascent_raw(f), scale);
+        const int32_t d = ui_scale::scale_coord(font_descent_raw(f), scale);
         py = y + (a - d) / 2;
-    } else if (flags & 0x40) py = y - gxFontDescent_o(f);
+    } else if (flags & 0x40) py = y - ui_scale::scale_coord(font_descent_raw(f), scale);
     else py = y;
     if (!f) {
         gxText_o(px + 1, py + 1, buf, GU32(0x00522a88));
@@ -2360,8 +2414,14 @@ static void __cdecl gxFontPrintf_n(const FontHdr* f, const void* pal, uint32_t f
     do {
         const uint32_t ch = (uint8_t)*p;
         const int32_t fr = f->frame[ch];
-        if (fr >= 0) gxDrawStamp_o(f->stamp, px + f->xoff[ch], py, fr, pal);
-        px += f->adv[(uint8_t)*p++];
+        if (fr >= 0) {
+            const int32_t glyph_x = px + ui_scale::scale_coord(f->xoff[ch], scale);
+            if (scale > 1.0f)
+                gx_draw_stamp_scaled((const StampHdr*)f->stamp, glyph_x, py, fr, pal, scale);
+            else
+                gxDrawStamp_o(f->stamp, glyph_x, py, fr, pal);
+        }
+        px += ui_scale::scale_coord(f->adv[(uint8_t)*p++], scale);
     } while (*p != 0);
 }
 static void fp_gxFontPrintf(Footprint& f, const FontHdr*, const void*, uint32_t, int32_t, int32_t, const char*, FONT_VA_FP) { fp_cur_clip(f); }
@@ -3388,3 +3448,9 @@ static void fp_draw_tire_dash(Footprint& f, int32_t, int32_t, Point2Df, float, f
 PORT_FN(0x00429be0, "draw_tire_dash", draw_tire_dash_n, fp_draw_tire_dash)
 
 }  // namespace
+
+// UI styles use this bridge so their stamp frames grow with the proportional
+// font on high-resolution dialogs, just as glyph stamps already do.
+void vp_draw_stamp_scaled(void* stamp, int32_t x, int32_t y, int32_t frame, const void* palette, float scale) {
+    gx_draw_stamp_scaled((const StampHdr*)stamp, x, y, frame, palette, scale);
+}

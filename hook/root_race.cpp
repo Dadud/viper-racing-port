@@ -43,6 +43,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "port.h"
+#include "content_game.h"
 #include "ui_types.h"
 #include "x87.h"
 #include "root_main.h"
@@ -289,6 +290,7 @@ static void fp_sort_f(Footprint&, const char*, const char*) {}
 PORT_FN(0x004067a0, "sort_f", sort_f_c, fp_sort_f)
 
 static void __cdecl RaceEnd_c() {
+    content::game_clear_selection();
     ccall<void>(F_StringTableForget, UI_GP(void, S_TRACK_TAB));
     void* list = UI_GP(void, S_CARLIST);
     UI_GP(void, S_TRACK_TAB) = 0;
@@ -298,6 +300,16 @@ static void __cdecl RaceEnd_c() {
 }
 static void fp_RaceEnd(Footprint& f) { f.replay_only = "frees the car list and tracks.tab"; }
 PORT_FN(0x004067c0, "RaceEnd", RaceEnd_c, fp_RaceEnd)
+
+static void __cdecl RaceEnd_content_adapter() {
+    typedef void(__cdecl* Original_t)();
+    Original_t original = (Original_t)port_original(0x004067c0);
+    if (original) original();
+    content::game_clear_selection();
+}
+static void fp_RaceEnd_adapter(Footprint& f) { f.replay_only = "the community build's original race teardown, then releases the content selection"; }
+PORT_FN_ADAPTER(0x004067c0, "RaceEnd content adapter", RaceEnd_content_adapter,
+                fp_RaceEnd_adapter, 0xe6a8157a, 5)
 
 static int32_t __cdecl GetTrackCount_c() { return ccall<int32_t>(F_StringTableNumRows, UI_GP(void, S_TRACK_TAB)); }
 PORT_FN(0x00406800, "GetTrackCount", GetTrackCount_c, fp_none)

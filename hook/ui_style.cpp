@@ -21,6 +21,9 @@
 #include <string.h>
 #include "port.h"
 #include "ui_types.h"
+#include "ui_scale.h"
+
+void vp_draw_stamp_scaled(void* stamp, int32_t x, int32_t y, int32_t frame, const void* palette, float scale);
 
 namespace {
 namespace ui_style {
@@ -138,8 +141,10 @@ static void __cdecl UIStyleGetBounds_n(int32_t style, const char* text, int32_t 
     void* st = s->stamp;
     if (st) {
         ccall<void>(F_gxStampHotSpot, st, &hx, &hy);
-        int32_t w = ccall<int32_t>(F_gxStampWidth, (void*)s->stamp);
-        const int32_t h = ccall<int32_t>(F_gxStampHeight, (void*)s->stamp);
+        hx = ui_scale::scale_coord(hx, ui_scale::font_scale);
+        hy = ui_scale::scale_coord(hy, ui_scale::font_scale);
+        int32_t w = ui_scale::scale_coord(ccall<int32_t>(F_gxStampWidth, (void*)s->stamp), ui_scale::font_scale);
+        const int32_t h = ui_scale::scale_coord(ccall<int32_t>(F_gxStampHeight, (void*)s->stamp), ui_scale::font_scale);
         int32_t a = x - hx;
         if (!(a < x)) a = x;
         bx0 = a;
@@ -179,18 +184,18 @@ static void __cdecl UIStyleGetBounds_n(int32_t style, const char* text, int32_t 
         else if (fl & 0x10) oy = -(hx / 2);
         else if (fl & 0x20) oy = -ccall<int32_t>(F_gxFontAscent, (void*)s->font);
         wmax += (ccall<int32_t>(F_gxFontStringWidth, (void*)s->font, (const char*)0x004f7218) + 1) / 2;
-        int32_t xd = s->xo_down;
-        const int32_t xn = s->xo;
+        int32_t xd = ui_scale::scale_coord(s->xo_down, ui_scale::font_scale);
+        const int32_t xn = ui_scale::scale_coord(s->xo, ui_scale::font_scale);
         int32_t c = xd < xn ? xd : xn;
         c = c + ox + x;
         if (!(c < bx0)) c = bx0;
         bx0 = c;
-        c = s->xo_down;
+        c = ui_scale::scale_coord(s->xo_down, ui_scale::font_scale);
         if (!(c > xn)) c = xn;
         c = c + ox + wmax + x;
         if (!(c > bx1)) c = bx1;
         bx1 = c;
-        const int32_t yd = s->yo_down, yn = s->yo;
+        const int32_t yd = ui_scale::scale_coord(s->yo_down, ui_scale::font_scale), yn = ui_scale::scale_coord(s->yo, ui_scale::font_scale);
         c = yd < yn ? yd : yn;
         c = c + oy + y;
         if (!(c < by0)) c = by0;
@@ -348,7 +353,13 @@ static void __cdecl UIStyleDraw_n(int32_t style, int32_t x, int32_t y, const cha
     if (st) {
         const uint32_t n = (uint32_t)ccall<int32_t>(F_gxStampCount, st);
         // FIX: a stamp with no frames divided by zero (`div`: a fault): it has nothing to draw
-        if (!VP_FIX || n != 0) ccall<void>(F_gxDrawStamp, st, x, y, (int32_t)(state % n), (void*)0);
+        if (!VP_FIX || n != 0) {
+            const int32_t frame = (int32_t)(state % n);
+            if (ui_scale::font_scale > 1.0f)
+                vp_draw_stamp_scaled(st, x, y, frame, 0, ui_scale::font_scale);
+            else
+                ccall<void>(F_gxDrawStamp, st, x, y, frame, (void*)0);
+        }
     }
     const char* p = text;
     if (!p) return;
@@ -362,8 +373,8 @@ static void __cdecl UIStyleDraw_n(int32_t style, int32_t x, int32_t y, const cha
     do {
         const char* nl = ccall<const char*>(F_strchr, p, (int)'\n');
         const int32_t len = nl ? (int32_t)(nl - p) : (int32_t)crt_strlen(p);
-        const int32_t yo = down ? s->yo_down : s->yo;
-        const int32_t xo = down ? s->xo_down : s->xo;
+        const int32_t yo = ui_scale::scale_coord(down ? s->yo_down : s->yo, ui_scale::font_scale);
+        const int32_t xo = ui_scale::scale_coord(down ? s->xo_down : s->xo, ui_scale::font_scale);
         ccall<void>(F_gxFontPrintN, (void*)s->font, pal, (uint32_t)s->flags, x + xo, y + yo, p, len);
         y += lh;
         p = ccall<const char*>(F_strchr, p, (int)'\n');
@@ -408,7 +419,9 @@ static void fp_UIStyleWordWrap(Footprint& f, int32_t, int32_t, char* out, const 
 PORT_FN(0x0047fb90, "UIStyleWordWrap", UIStyleWordWrap_n, fp_UIStyleWordWrap)
 
 // get_width: 8 pixels a character, whatever the style
-static int32_t __cdecl get_width_n(int32_t, const char* a, const char* b) { return (int32_t)(((uint32_t)b - (uint32_t)a) * 8u); }
+static int32_t __cdecl get_width_n(int32_t, const char* a, const char* b) {
+    return ui_scale::scale_coord((int32_t)(((uint32_t)b - (uint32_t)a) * 8u), ui_scale::font_scale);
+}
 static void fp_get_width(Footprint& f, int32_t, const char*, const char*) { f.pure = true; }
 PORT_FN(0x0047fc20, "get_width", get_width_n, fp_get_width)
 

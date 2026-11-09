@@ -147,10 +147,16 @@ template <typename R, typename... A> struct Sig<R(__fastcall*)(A...)> {
     static EntReg VP_CAT(reg_, NEW)({V10, NAME, (void*)&NEW, Sig<decltype(&NEW)>::fast, Sig<decltype(&NEW)>::nstack,   \
                                      Sig<decltype(&NEW)>::ret, Sig<decltype(&NEW)>::retf, &Sig<decltype(&NEW)>::fp<&FP>});
 
+uint32_t A(uint32_t v10) { return v10; }
+
 void Footprint::add(void* p, uint32_t bytes, const char* what) { if (n < MAX) r[n++] = {p, bytes, what}; }
 void Footprint::object(void* obj, const char* what) { printf("footprint: object() not expected (%s)\n", what); add(obj, 4, what); }
 void Footprint::stack_ptr(void* p, const char* what) { add(p, 4, what); }
 
+// Keep this differential harness on the legacy 640x480 geometry. Responsive
+// scale math is covered directly by content_registry_test.cpp; this harness
+// checks that the unscaled UI still matches the original game.
+#define VP_TEST_DISABLE_UI_SCALE
 #include "../hook/ui_style.cpp"
 #include "../hook/ui_window.cpp"
 #include "../hook/ui_widget.cpp"

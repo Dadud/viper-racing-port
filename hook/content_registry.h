@@ -2,7 +2,9 @@
 
 // Read-only inventory of legacy content. Nothing in this API installs or loads a race.
 #include <filesystem>
+#include <fstream>
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +17,7 @@ struct Resource {
     std::string tag; // four on-disk bytes, reversed relative to the resource FourCC
     uint32_t version;
     uint32_t size;
+    uint64_t offset = 0; // payload offset in the archive; valid only for a successfully inspected entry
 };
 struct Dependency {
     Dependency() = default;
@@ -42,7 +45,31 @@ struct Entry {
     std::vector<Resource> resources;
     std::vector<Dependency> dependencies;
     std::vector<std::string> issues;
-    bool valid = false; // container structure only; not a guarantee of playability
+    bool valid = false; // archive and recognized MINF layout; not a guarantee of playability
+};
+
+// Owns a validated archive handle and reads exact resource payloads from it.
+// Keeping the handle open binds subsequent reads to the bytes inspected by
+// open(), even if another file is later placed at the same path.
+class ArchiveReader {
+public:
+    ArchiveReader() = default;
+    ArchiveReader(const ArchiveReader&) = delete;
+    ArchiveReader& operator=(const ArchiveReader&) = delete;
+    ArchiveReader(ArchiveReader&&) = default;
+    ArchiveReader& operator=(ArchiveReader&&) = default;
+
+    bool open(const Entry& expected, std::string& error);
+    bool read(const std::string& name, size_t max_size,
+              std::vector<uint8_t>& bytes, std::string& error,
+              Resource* descriptor = nullptr);
+    void close();
+    const Entry& entry() const { return entry_; }
+    bool is_open() const { return file_.is_open() && entry_.valid; }
+
+private:
+    std::ifstream file_;
+    Entry entry_;
 };
 struct Resolution {
     ResolutionStatus status = ResolutionStatus::missing;
@@ -62,6 +89,13 @@ struct InstallResult {
 };
 // Recursively scans regular .car, .trk and .tra files, without following symlinks.
 Registry scan(const std::filesystem::path& root);
+// Scans multiple roots into one deterministic registry. Overlapping roots do not
+// add the same physical file twice; byte-identical packages are marked duplicate
+// across roots as well as within one root.
+Registry scan_roots(const std::vector<std::filesystem::path>& roots);
+// Re-reads and validates one loose car or track package. Use this immediately
+// before loading a previously selected path to detect replacement or removal.
+Entry inspect_archive(const std::filesystem::path& path);
 // Validates and copies one loose 0TSR package into <library>/{cars,tracks}/<sha256>/.
 // Source files remain untouched; the matching valid JSON sidecar is copied with it.
 InstallResult install_archive(const std::filesystem::path& source, const std::filesystem::path& library_root);

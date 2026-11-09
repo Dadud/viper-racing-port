@@ -18,8 +18,9 @@
 // strncpy, stricmp, tolower, AITrackIsReversed, the UIDialogItem constructor, ASSERT_MSG) and so does every
 // function of the four files other than the one under test. For each call the original runs, the world (arena,
 // heap top, globals) and the log are kept, the world restored, the rewrite runs, and the world, return value, log
-// and any fault are compared; every byte the original changed must lie inside the rewrite's footprint (or an AI
-// static, for the physics-thread functions) unless it's replay_only. The world continues from the original's result.
+// and any fault are compared; every byte the reference changed must lie inside the rewrite's footprint (or an AI
+// static, for the physics-thread functions) unless it's replay_only. AIResetCars uses a composed reference because
+// the community patch adds Proxer::update after the v1.0 routine. The world continues from the reference result.
 //
 // The fixes (port.h: VP_FIX): the plain build defines VP_FAITHFUL and checks the rewrites against the originals as
 // above. Built with /DFIX_TESTS it compiles the fixed rewrites and runs the same worlds (every one must still equal
@@ -771,6 +772,11 @@ static void rand_name(char* s, int maxlen) {
 }
 static Proxer* proxer() { return *(Proxer**)0x004ec484; }
 
+static void __cdecl AIResetCars_community_reference() {
+    ((void(__cdecl*)())(uintptr_t)0x0041d1a0)();
+    ((void(__fastcall*)(Proxer*, Edx))(uintptr_t)0x00422fd0)(proxer(), 0);
+}
+
 static void build_world() {
     rand_bytes(g_arena, ARENA_SIZE);
     g_heap_top = g_arena + OFF_HEAP;
@@ -916,7 +922,9 @@ static void test_ai() {
         int i = ri(0, 15);
         CHECK(AICarInfo_UpdatePos, info(i), 0);
     }
-    CHECK0(AIResetCars);
+    check("AIResetCars (community behavior)", [&](bool orig) {
+        return invoke(orig ? &AIResetCars_community_reference : &AIResetCars);
+    }, [&](Footprint& fp) { fp_reset_cars(fp); });
     CHECK0(AIBGUpdate);
     for (int r = 0; r < 3; r++) {
         int i = ri(0, 15);

@@ -24,7 +24,8 @@
 // random pixels from the round's stream, GetDrawableSize answers the round's window size (changed now and then at a
 // flip). The renderer is started without a window (gfx::start_headless, the one test entry point in gl_core.cpp). The
 // fakes count the calls that reach them by the check's phase, so the harness also checks the protocol's own claims: the
-// rewrite's pass reaches no OpenGL function, and the original's pass makes every call it records exactly once.
+// rewrite's pass reaches no OpenGL function, and the original never sends an unrecorded call (the renderer may skip
+// recorded calls already satisfied by its state cache).
 //
 // port.h's check interface is implemented here as port.cpp implements it: shadow_com_phase (1 in the original's pass,
 // 2 in the rewrite's), shadow_com_effect (the pass's output log, each record [method][arguments][data, or its size
@@ -157,6 +158,7 @@ namespace gxdx {
 #include "../hook/gx_dx.cpp"
 }
 #include "../hook/gx_dd.cpp"
+#include "../hook/gl_core.h"
 #include "vrmod_image.h"
 static bool g_vrmod;                    // VP_VRMOD=1 (vrmod_aspect, below)
 
@@ -989,14 +991,14 @@ static uint64_t check(Reg* r, const uint32_t* a, PrePass pre = 0) {
         rwhere = rw;
         same = false;
     }
-    // the protocol's own claims: the rewrite's pass reached no OpenGL function; the original's made each call it
-    // recorded exactly once
+    // the protocol's own claims: the rewrite's pass reached no OpenGL function; the original never sent more live calls
+    // than it recorded. The renderer's state cache intentionally elides redundant recorded calls.
     std::string pwhere;
     if (gpu::calls[2]) {
         char b[160];
         sprintf(b, "the rewrite's pass reached OpenGL %ld times", gpu::calls[2]);
         pwhere = b;
-    } else if (gpu1 != (long)g_glout[0].size()) {
+    } else if (gpu1 > (long)g_glout[0].size()) {
         char b[160];
         sprintf(b, "the original's pass made %ld OpenGL calls and recorded %zu", gpu1, g_glout[0].size());
         pwhere = b;
@@ -1822,11 +1824,38 @@ static void vrmod_aspect() {
     vrmod_put32(0x0045ec67, chance(70) ? 0x004e0294 : pool[rnd() % 5]);
     vrmod_put32(0x0045ec88, chance(70) ? 0x004db054 : pool[rnd() % 5]);
 }
+
+static bool check_bounded_video_memory() {
+    gfx::DirectDraw2 direct_draw;
+    DDSCAPS caps{};
+    DWORD total = 0, free = 0;
+    caps.dwCaps = DDSCAPS_TEXTURE | DDSCAPS_VIDEOMEMORY;
+    const HRESULT local_result = direct_draw.GetAvailableVidMem(&caps, &total, &free);
+    if (local_result != DD_OK || total != (64u << 20) || free != (64u << 20)) {
+        printf("bounded OpenGL video-memory report failed: local %lu/%lu/%lu\n",
+               (unsigned long)local_result, (unsigned long)total, (unsigned long)free);
+        return false;
+    }
+    caps.dwCaps = DDSCAPS_NONLOCALVIDMEM;
+    total = 1;
+    free = 1;
+    const HRESULT nonlocal_result = direct_draw.GetAvailableVidMem(&caps, &total, &free);
+    if (nonlocal_result != DD_OK || total != 0 || free != 0) {
+        printf("bounded OpenGL nonlocal-memory report failed: nonlocal %lu/%lu/%lu\n",
+               (unsigned long)nonlocal_result, (unsigned long)total, (unsigned long)free);
+        return false;
+    }
+    gfx::vidmem(nullptr, nullptr, nullptr);
+    puts("bounded OpenGL video-memory report passed (64 MiB local, 0 nonlocal)");
+    return true;
+}
+
 static int main2(int argc, char** argv) {
     int rounds = argc > 1 ? atoi(argv[1]) : 40;
     g_rng = argc > 2 ? (uint32_t)strtoul(argv[2], 0, 0) : 0x2545f491u;
     if (!g_rng) g_rng = 1;
     const char* modes = argc > 3 ? argv[3] : "both";
+    if (!check_bounded_video_memory()) return 1;
     if (!load_race_exe("out\\race_v10.exe")) return 2;
     g_vrmod = getenv("VP_VRMOD") && atoi(getenv("VP_VRMOD"));
     if (g_vrmod) { vrmod_apply(); puts("vrmod's race.exe (test/vrmod_image.h), random aspectfix R0"); }
